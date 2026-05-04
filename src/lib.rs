@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub const DEFAULT_INDEXER_URL: &str = "ws://127.0.0.1:8172";
 pub const DEFAULT_KUBO_API_URL: &str = "http://127.0.0.1:5001";
@@ -132,11 +132,6 @@ pub struct DecodedEvent {
     pub event: Value,
 }
 
-#[allow(async_fn_in_trait)]
-pub trait PinClient {
-    async fn pin(&self, cid: &str) -> Result<(), Error>;
-}
-
 #[derive(Clone)]
 pub struct KuboClient {
     base_url: String,
@@ -152,15 +147,31 @@ impl KuboClient {
     }
 }
 
-impl PinClient for KuboClient {
-    async fn pin(&self, cid: &str) -> Result<(), Error> {
+impl KuboClient {
+    pub async fn pin(&self, cid: &str) -> Result<(), Error> {
         let url = format!("{}/api/v0/pin/add", self.base_url);
-        self.http
-            .post(url)
+        let timeout = std::time::Duration::from_secs(30);
+        info!(cid = %cid, %url, timeout_secs = timeout.as_secs(), "starting kubo pin/add request");
+
+        let response = self
+            .http
+            .post(&url)
             .query(&[("arg", cid)])
+            .timeout(timeout)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            warn!(cid = %cid, %url, %status, body = %body, "kubo pin/add failed");
+            return Err(Error::Protocol(format!(
+                "kubo pin/add failed with status {status}: {body}"
+            )));
+        }
+
+        info!(cid = %cid, %url, %status, body = %body, "kubo pin/add completed");
         Ok(())
     }
 }
@@ -169,7 +180,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let pinner = KuboClient::new(config.kubo_api_url.clone());
 
     loop {
-        match run_once(&config, &pinner).await {
+        match run_once(&config, pinner.clone()).await {
             Ok(()) => return Ok(()),
             Err(error) => {
                 error!(error = %error, "connection loop failed; retrying in 2s");
@@ -179,7 +190,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
     }
 }
 
-async fn run_once(config: &Config, pinner: &impl PinClient) -> Result<(), Error> {
+async fn run_once(config: &Config, pinner: KuboClient) -> Result<(), Error> {
     let (mut ws, _) = connect_async(&config.indexer_url).await?;
 
     let (pallet_index, event_index) = lookup_publish_revision_variant(&mut ws).await?;
@@ -194,9 +205,60 @@ async fn run_once(config: &Config, pinner: &impl PinClient) -> Result<(), Error>
         if let Message::Text(text) = message {
             match serde_json::from_str::<SubscriptionNotification>(&text) {
                 Ok(notification) => {
-                    if let Some(cid) = extract_publish_revision_cid(&notification)? {
-                        info!(cid = %cid, "pinning content");
-                        pinner.pin(&cid).await?;
+                    info!(
+                        subscription = %notification.params.subscription,
+                        method = %notification.method,
+                        payload = %text,
+                        "received subscription notification"
+                    );
+
+                    match extract_publish_revision(&notification) {
+                        Ok(Some(revision)) => {
+                            info!(
+                                item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                revision_id = revision.revision_id.unwrap_or_default(),
+                                cid = %revision.cid,
+                                "queueing background pin"
+                            );
+
+                            let pin_client = pinner.clone();
+                            tokio::spawn(async move {
+                                info!(
+                                    item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                    owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                    revision_id = revision.revision_id.unwrap_or_default(),
+                                    cid = %revision.cid,
+                                    "pinning content"
+                                );
+
+                                match pin_client.pin(&revision.cid).await {
+                                    Ok(()) => {
+                                        info!(
+                                            item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                            owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                            revision_id = revision.revision_id.unwrap_or_default(),
+                                            cid = %revision.cid,
+                                            "pinned content"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                            owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                            revision_id = revision.revision_id.unwrap_or_default(),
+                                            cid = %revision.cid,
+                                            error = %error,
+                                            "background pin failed"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            warn!(error = %error, payload = %text, "ignoring malformed publish revision event");
+                        }
                     }
                 }
                 Err(_) => {
@@ -300,9 +362,17 @@ where
     ))
 }
 
-pub fn extract_publish_revision_cid(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishRevision {
+    pub item_id: Option<String>,
+    pub owner: Option<String>,
+    pub revision_id: Option<u32>,
+    pub cid: String,
+}
+
+pub fn extract_publish_revision(
     notification: &SubscriptionNotification,
-) -> Result<Option<String>, Error> {
+) -> Result<Option<PublishRevision>, Error> {
     if notification.method != "acuity_subscription" {
         return Ok(None);
     }
@@ -322,15 +392,40 @@ pub fn extract_publish_revision_cid(
         return Ok(None);
     }
 
-    let ipfs_hash = event
+    let fields = event
         .get("fields")
-        .and_then(|fields| fields.get("ipfs_hash"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            Error::Protocol("Content.PublishRevision missing fields.ipfs_hash".into())
-        })?;
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::Protocol("Content.PublishRevision missing fields".into()))?;
 
-    Ok(Some(digest_hex_to_cid(ipfs_hash)?))
+    info!(fields = %serde_json::Value::Object(fields.clone()), "decoded Content.PublishRevision fields");
+
+    let ipfs_hash = fields
+        .get("ipfs_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Protocol("Content.PublishRevision missing fields.ipfs_hash".into()))?;
+
+    Ok(Some(PublishRevision {
+        item_id: fields
+            .get("item_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        owner: fields
+            .get("owner")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        revision_id: fields
+            .get("revision_id")
+            .and_then(parse_u32_value),
+        cid: digest_hex_to_cid(ipfs_hash)?,
+    }))
+}
+
+fn parse_u32_value(value: &Value) -> Option<u32> {
+    match value {
+        Value::Number(number) => number.as_u64().and_then(|value| u32::try_from(value).ok()),
+        Value::String(string) => string.parse::<u32>().ok(),
+        _ => None,
+    }
 }
 
 pub fn hex_to_bytes32(hex_value: &str) -> Result<[u8; 32], Error> {
@@ -406,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_publish_revision_cid_from_notification() {
+    fn extract_publish_revision_from_notification() {
         let notification: SubscriptionNotification = serde_json::from_value(serde_json::json!({
             "method": "acuity_subscription",
             "params": {
@@ -423,6 +518,9 @@ mod tests {
                             "palletName": "Content",
                             "eventName": "PublishRevision",
                             "fields": {
+                                "item_id": "0xdc58d9c8f1ed90f432d5b49bdc82ae3f617fd513b3995814d1e37d541bc72161",
+                                "owner": "5ERcQ879d4HofcDgzTxaZXo98JNZvjKWQcisM8thyAkj8ztQ",
+                                "revision_id": 1,
                                 "ipfs_hash": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
                             }
                         }
@@ -432,15 +530,21 @@ mod tests {
         }))
         .unwrap();
 
-        let cid = extract_publish_revision_cid(&notification).unwrap();
+        let revision = extract_publish_revision(&notification).unwrap().unwrap();
         assert_eq!(
-            cid.as_deref(),
-            Some("QmNLfbof5rLekrACjeuLk9JmGZD2HDBHCU4z16iYKmx5SE")
+            revision.item_id.as_deref(),
+            Some("0xdc58d9c8f1ed90f432d5b49bdc82ae3f617fd513b3995814d1e37d541bc72161")
         );
+        assert_eq!(
+            revision.owner.as_deref(),
+            Some("5ERcQ879d4HofcDgzTxaZXo98JNZvjKWQcisM8thyAkj8ztQ")
+        );
+        assert_eq!(revision.revision_id, Some(1));
+        assert_eq!(revision.cid, "QmNLfbof5rLekrACjeuLk9JmGZD2HDBHCU4z16iYKmx5SE");
     }
 
     #[test]
-    fn extract_publish_revision_cid_ignores_other_events() {
+    fn extract_publish_revision_ignores_other_events() {
         let notification: SubscriptionNotification = serde_json::from_value(serde_json::json!({
             "method": "acuity_subscription",
             "params": {
@@ -464,11 +568,11 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(extract_publish_revision_cid(&notification).unwrap(), None);
+        assert_eq!(extract_publish_revision(&notification).unwrap(), None);
     }
 
     #[test]
-    fn extract_publish_revision_cid_errors_when_hash_missing() {
+    fn extract_publish_revision_errors_when_hash_missing() {
         let notification: SubscriptionNotification = serde_json::from_value(serde_json::json!({
             "method": "acuity_subscription",
             "params": {
@@ -493,7 +597,7 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            extract_publish_revision_cid(&notification),
+            extract_publish_revision(&notification),
             Err(Error::Protocol(_))
         ));
     }
