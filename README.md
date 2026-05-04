@@ -69,7 +69,8 @@ cargo build --release
    - extract `fields.ipfs_hash`
    - convert the digest to CIDv0
    - call Kubo `pin/add`
-6. If the WebSocket connection drops, retry after a short delay.
+6. Send a WebSocket ping every 2 minutes to keep the connection alive.
+7. If the WebSocket connection drops, retry after a short delay.
 
 ## IPFS hash conversion
 
@@ -108,5 +109,6 @@ Only unit tests are included. Integration tests are intentionally not included.
 ## Notes
 
 - The service keeps no persistent state.
+- The WebSocket client sends a ping frame every 2 minutes to reduce idle disconnects.
 - Repeated events may cause repeated pin requests; Kubo pinning is expected to be safe for that case.
 - Notifications are processed from live subscriptions only.
