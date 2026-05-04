@@ -1,7 +1,16 @@
 use acuity_ipfs_pinner::{Cli, Config, run};
+use tracing::error;
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() {
+    fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("acuity_ipfs_pinner=info")),
+        )
+        .init();
+
     let cli = Cli::parse_from_env();
     let config = Config {
         indexer_url: cli.indexer_url,
@@ -9,7 +18,7 @@ async fn main() {
     };
 
     if let Err(error) = run(config).await {
-        eprintln!("fatal error: {error}");
+        error!(error = %error, "fatal error");
         std::process::exit(1);
     }
 }

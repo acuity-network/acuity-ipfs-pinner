@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tracing::{error, info};
 
 pub const DEFAULT_INDEXER_URL: &str = "ws://127.0.0.1:8172";
 pub const DEFAULT_KUBO_API_URL: &str = "http://127.0.0.1:5001";
@@ -171,7 +172,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         match run_once(&config, &pinner).await {
             Ok(()) => return Ok(()),
             Err(error) => {
-                eprintln!("connection loop failed: {error}; retrying in 2s");
+                error!(error = %error, "connection loop failed; retrying in 2s");
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }
@@ -183,8 +184,9 @@ async fn run_once(config: &Config, pinner: &impl PinClient) -> Result<(), Error>
 
     let (pallet_index, event_index) = lookup_publish_revision_variant(&mut ws).await?;
     let subscription_id = subscribe_to_variant(&mut ws, pallet_index, event_index).await?;
-    println!(
-        "subscribed to Content.PublishRevision as variant ({pallet_index}, {event_index}) with subscription {subscription_id}"
+    info!(
+        pallet_index,
+        event_index, subscription_id, "subscribed to Content.PublishRevision"
     );
 
     while let Some(message) = ws.next().await {
@@ -193,7 +195,7 @@ async fn run_once(config: &Config, pinner: &impl PinClient) -> Result<(), Error>
             match serde_json::from_str::<SubscriptionNotification>(&text) {
                 Ok(notification) => {
                     if let Some(cid) = extract_publish_revision_cid(&notification)? {
-                        println!("pinning {cid}");
+                        info!(cid = %cid, "pinning content");
                         pinner.pin(&cid).await?;
                     }
                 }
