@@ -189,33 +189,18 @@ async fn run_once(config: &Config, pinner: &impl PinClient) -> Result<(), Error>
         event_index, subscription_id, "subscribed to Content.PublishRevision"
     );
 
-    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(120));
-    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    ping_interval.tick().await;
-
-    loop {
-        tokio::select! {
-            _ = ping_interval.tick() => {
-                ws.send(Message::Ping(Vec::new().into())).await?;
-                info!("sent websocket ping");
-            }
-            message = ws.next() => {
-                let Some(message) = message else {
-                    break;
-                };
-                let message = message?;
-                if let Message::Text(text) = message {
-                    match serde_json::from_str::<SubscriptionNotification>(&text) {
-                        Ok(notification) => {
-                            if let Some(cid) = extract_publish_revision_cid(&notification)? {
-                                info!(cid = %cid, "pinning content");
-                                pinner.pin(&cid).await?;
-                            }
-                        }
-                        Err(_) => {
-                            // Ignore JSON-RPC responses and unrelated messages.
-                        }
+    while let Some(message) = ws.next().await {
+        let message = message?;
+        if let Message::Text(text) = message {
+            match serde_json::from_str::<SubscriptionNotification>(&text) {
+                Ok(notification) => {
+                    if let Some(cid) = extract_publish_revision_cid(&notification)? {
+                        info!(cid = %cid, "pinning content");
+                        pinner.pin(&cid).await?;
                     }
+                }
+                Err(_) => {
+                    // Ignore JSON-RPC responses and unrelated messages.
                 }
             }
         }
