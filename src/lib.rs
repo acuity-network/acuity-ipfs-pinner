@@ -237,12 +237,11 @@ fn resolve_kubo_repo_dir() -> Result<PathBuf, Error> {
 }
 
 async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<(), Error> {
-    if repo_dir.join("config").exists() {
-        return Ok(());
-    }
-
     info!(repo_dir = %repo_dir.display(), "initializing kubo repo");
-    std::fs::create_dir_all(repo_dir)?;
+
+    if let Some(parent_dir) = repo_dir.parent() {
+        std::fs::create_dir_all(parent_dir)?;
+    }
 
     let output = Command::new("ipfs")
         .arg("init")
@@ -251,15 +250,21 @@ async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<(), 
         .output()
         .await?;
 
-    if !output.status.success() {
-        return Err(Error::Protocol(format!(
+    match output.status.code() {
+        Some(0) => {
+            info!(repo_dir = %repo_dir.display(), "created new kubo repo");
+            Ok(())
+        }
+        Some(1) => {
+            info!(repo_dir = %repo_dir.display(), "kubo repo already existed");
+            Ok(())
+        }
+        _ => Err(Error::Protocol(format!(
             "ipfs init failed with status {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
-        )));
+        ))),
     }
-
-    Ok(())
 }
 
 async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<(), Error> {
