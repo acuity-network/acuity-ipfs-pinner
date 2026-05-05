@@ -132,6 +132,20 @@ pub struct DecodedEvent {
     pub event: Value,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct KuboIdResponse {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(rename = "PublicKey")]
+    pub public_key: Option<String>,
+    #[serde(rename = "Addresses", default)]
+    pub addresses: Vec<String>,
+    #[serde(rename = "AgentVersion")]
+    pub agent_version: Option<String>,
+    #[serde(rename = "ProtocolVersion")]
+    pub protocol_version: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct KuboClient {
     base_url: String,
@@ -148,6 +162,33 @@ impl KuboClient {
 }
 
 impl KuboClient {
+    pub async fn id(&self) -> Result<KuboIdResponse, Error> {
+        let url = format!("{}/api/v0/id", self.base_url);
+        let timeout = std::time::Duration::from_secs(10);
+        info!(%url, timeout_secs = timeout.as_secs(), "starting kubo id request");
+
+        let response = self.http.post(&url).timeout(timeout).send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            warn!(%url, %status, body = %body, "kubo id request failed");
+            return Err(Error::Protocol(format!(
+                "kubo id failed with status {status}: {body}"
+            )));
+        }
+
+        let id = serde_json::from_str::<KuboIdResponse>(&body)?;
+        info!(
+            peer_id = %id.id,
+            agent_version = id.agent_version.as_deref().unwrap_or("<unknown>"),
+            protocol_version = id.protocol_version.as_deref().unwrap_or("<unknown>"),
+            address_count = id.addresses.len(),
+            "connected to kubo node"
+        );
+        Ok(id)
+    }
+
     pub async fn pin(&self, cid: &str) -> Result<(), Error> {
         let url = format!("{}/api/v0/pin/add", self.base_url);
         let timeout = std::time::Duration::from_secs(30);
@@ -178,6 +219,7 @@ impl KuboClient {
 
 pub async fn run(config: Config) -> Result<(), Error> {
     let pinner = KuboClient::new(config.kubo_api_url.clone());
+    pinner.id().await?;
 
     loop {
         match run_once(&config, pinner.clone()).await {
