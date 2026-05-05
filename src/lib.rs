@@ -2,7 +2,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fmt, path::PathBuf, process::Stdio};
-use tokio::{process::{Child, Command}, time::{Duration, Instant}};
+use tokio::{
+    process::{Child, Command},
+    signal,
+    time::{Duration, Instant},
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
@@ -317,94 +321,204 @@ async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>, Error> {
     Ok(Some(daemon))
 }
 
-pub async fn run(config: Config) -> Result<(), Error> {
-    let pinner = KuboClient::new(config.kubo_api_url.clone());
-    let _kubo_daemon = start_kubo_daemon(&pinner).await?;
+async fn stop_kubo_daemon(daemon: &mut Child) -> Result<(), Error> {
+    if let Some(status) = daemon.try_wait()? {
+        info!(status = %status, "ipfs daemon already exited");
+        return Ok(());
+    }
 
-    loop {
-        match run_once(&config, pinner.clone()).await {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                error!(error = %error, "connection loop failed; retrying in 2s");
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
+    let Some(pid) = daemon.id() else {
+        return Err(Error::Protocol("ipfs daemon pid unavailable".into()));
+    };
+
+    info!(pid, "sending SIGINT to ipfs daemon");
+    let status = Command::new("kill")
+        .arg("-INT")
+        .arg(pid.to_string())
+        .status()
+        .await?;
+
+    if !status.success() {
+        return Err(Error::Protocol(format!(
+            "failed to send SIGINT to ipfs daemon: {status}"
+        )));
+    }
+
+    match tokio::time::timeout(Duration::from_secs(30), daemon.wait()).await {
+        Ok(status) => {
+            let status = status?;
+            info!(status = %status, "ipfs daemon stopped");
+            Ok(())
+        }
+        Err(_) => {
+            warn!(pid, "timed out waiting for ipfs daemon to stop; killing");
+            daemon.kill().await?;
+            let status = daemon.wait().await?;
+            warn!(status = %status, "ipfs daemon killed after shutdown timeout");
+            Ok(())
         }
     }
 }
 
+pub async fn run(config: Config) -> Result<(), Error> {
+    let pinner = KuboClient::new(config.kubo_api_url.clone());
+    let mut kubo_daemon = start_kubo_daemon(&pinner).await?;
+
+    loop {
+        match run_once(&config, pinner.clone()).await {
+            Ok(()) => break,
+            Err(error) => {
+                error!(error = %error, "connection loop failed; retrying in 2s");
+                tokio::select! {
+                    _ = signal::ctrl_c() => {
+                        info!(indexer_url = %config.indexer_url, kubo_api_url = %config.kubo_api_url, "received Ctrl+C while waiting to reconnect; shutting down network connections");
+                        break;
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                }
+            }
+        }
+    }
+
+    info!(indexer_url = %config.indexer_url, kubo_api_url = %config.kubo_api_url, kubo_daemon_managed = kubo_daemon.is_some(), "shutdown sequence complete for application network connections");
+
+    if let Some(mut daemon) = kubo_daemon.take() {
+        stop_kubo_daemon(&mut daemon).await?;
+    }
+
+    Ok(())
+}
+
+async fn close_indexer_connection<S>(
+    ws: &mut S,
+    indexer_url: &str,
+    subscription_id: &str,
+) -> Result<(), Error>
+where
+    S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    info!(
+        indexer_url,
+        subscription_id, "sending websocket close to indexer"
+    );
+    ws.send(Message::Close(None)).await?;
+
+    match tokio::time::timeout(Duration::from_secs(5), ws.next()).await {
+        Ok(Some(Ok(Message::Close(frame)))) => {
+            info!(indexer_url, subscription_id, close_frame = ?frame, "indexer acknowledged websocket close");
+        }
+        Ok(Some(Ok(message))) => {
+            info!(indexer_url, subscription_id, message = ?message, "received final websocket message during shutdown");
+        }
+        Ok(Some(Err(error))) => {
+            warn!(indexer_url, subscription_id, error = %error, "error while closing indexer websocket");
+        }
+        Ok(None) => {
+            info!(indexer_url, subscription_id, "indexer websocket closed");
+        }
+        Err(_) => {
+            warn!(
+                indexer_url,
+                subscription_id, "timed out waiting for indexer websocket to close"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_once(config: &Config, pinner: KuboClient) -> Result<(), Error> {
     let (mut ws, _) = connect_async(&config.indexer_url).await?;
+    info!(indexer_url = %config.indexer_url, kubo_api_url = %config.kubo_api_url, "network connections established");
 
     let (pallet_index, event_index) = lookup_publish_revision_variant(&mut ws).await?;
     let subscription_id = subscribe_to_variant(&mut ws, pallet_index, event_index).await?;
     info!(
+        indexer_url = %config.indexer_url,
+        kubo_api_url = %config.kubo_api_url,
         pallet_index,
-        event_index, subscription_id, "subscribed to Content.PublishRevision"
+        event_index,
+        subscription_id,
+        "subscribed to Content.PublishRevision"
     );
 
-    while let Some(message) = ws.next().await {
-        let message = message?;
-        if let Message::Text(text) = message {
-            match serde_json::from_str::<SubscriptionNotification>(&text) {
-                Ok(notification) => {
-                    info!(
-                        subscription = %notification.params.subscription,
-                        method = %notification.method,
-                        payload = %text,
-                        "received subscription notification"
-                    );
-
-                    match extract_publish_revision(&notification) {
-                        Ok(Some(revision)) => {
+    loop {
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                info!(indexer_url = %config.indexer_url, kubo_api_url = %config.kubo_api_url, subscription_id, "received Ctrl+C; gracefully closing network connections");
+                close_indexer_connection(&mut ws, &config.indexer_url, &subscription_id).await?;
+                return Ok(());
+            }
+            message = ws.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                let message = message?;
+                if let Message::Text(text) = message {
+                    match serde_json::from_str::<SubscriptionNotification>(&text) {
+                        Ok(notification) => {
                             info!(
-                                item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
-                                owner = revision.owner.as_deref().unwrap_or("<missing>"),
-                                revision_id = revision.revision_id.unwrap_or_default(),
-                                cid = %revision.cid,
-                                "queueing background pin"
+                                subscription = %notification.params.subscription,
+                                method = %notification.method,
+                                payload = %text,
+                                "received subscription notification"
                             );
 
-                            let pin_client = pinner.clone();
-                            tokio::spawn(async move {
-                                info!(
-                                    item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
-                                    owner = revision.owner.as_deref().unwrap_or("<missing>"),
-                                    revision_id = revision.revision_id.unwrap_or_default(),
-                                    cid = %revision.cid,
-                                    "pinning content"
-                                );
+                            match extract_publish_revision(&notification) {
+                                Ok(Some(revision)) => {
+                                    info!(
+                                        item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                        owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                        revision_id = revision.revision_id.unwrap_or_default(),
+                                        cid = %revision.cid,
+                                        "queueing background pin"
+                                    );
 
-                                match pin_client.pin(&revision.cid).await {
-                                    Ok(()) => {
+                                    let pin_client = pinner.clone();
+                                    tokio::spawn(async move {
                                         info!(
                                             item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
                                             owner = revision.owner.as_deref().unwrap_or("<missing>"),
                                             revision_id = revision.revision_id.unwrap_or_default(),
                                             cid = %revision.cid,
-                                            "pinned content"
+                                            "pinning content"
                                         );
-                                    }
-                                    Err(error) => {
-                                        warn!(
-                                            item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
-                                            owner = revision.owner.as_deref().unwrap_or("<missing>"),
-                                            revision_id = revision.revision_id.unwrap_or_default(),
-                                            cid = %revision.cid,
-                                            error = %error,
-                                            "background pin failed"
-                                        );
-                                    }
+
+                                        match pin_client.pin(&revision.cid).await {
+                                            Ok(()) => {
+                                                info!(
+                                                    item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                    owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                    revision_id = revision.revision_id.unwrap_or_default(),
+                                                    cid = %revision.cid,
+                                                    "pinned content"
+                                                );
+                                            }
+                                            Err(error) => {
+                                                warn!(
+                                                    item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                    owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                    revision_id = revision.revision_id.unwrap_or_default(),
+                                                    cid = %revision.cid,
+                                                    error = %error,
+                                                    "background pin failed"
+                                                );
+                                            }
+                                        }
+                                    });
                                 }
-                            });
+                                Ok(None) => {}
+                                Err(error) => {
+                                    warn!(error = %error, payload = %text, "ignoring malformed publish revision event");
+                                }
+                            }
                         }
-                        Ok(None) => {}
-                        Err(error) => {
-                            warn!(error = %error, payload = %text, "ignoring malformed publish revision event");
+                        Err(_) => {
+                            // Ignore JSON-RPC responses and unrelated messages.
                         }
                     }
-                }
-                Err(_) => {
-                    // Ignore JSON-RPC responses and unrelated messages.
                 }
             }
         }
@@ -544,7 +658,9 @@ pub fn extract_publish_revision(
     let ipfs_hash = fields
         .get("ipfs_hash")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::Protocol("Content.PublishRevision missing fields.ipfs_hash".into()))?;
+        .ok_or_else(|| {
+            Error::Protocol("Content.PublishRevision missing fields.ipfs_hash".into())
+        })?;
 
     Ok(Some(PublishRevision {
         item_id: fields
@@ -555,9 +671,7 @@ pub fn extract_publish_revision(
             .get("owner")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        revision_id: fields
-            .get("revision_id")
-            .and_then(parse_u32_value),
+        revision_id: fields.get("revision_id").and_then(parse_u32_value),
         cid: digest_hex_to_cid(ipfs_hash)?,
     }))
 }
@@ -682,7 +796,10 @@ mod tests {
             Some("5ERcQ879d4HofcDgzTxaZXo98JNZvjKWQcisM8thyAkj8ztQ")
         );
         assert_eq!(revision.revision_id, Some(1));
-        assert_eq!(revision.cid, "QmNLfbof5rLekrACjeuLk9JmGZD2HDBHCU4z16iYKmx5SE");
+        assert_eq!(
+            revision.cid,
+            "QmNLfbof5rLekrACjeuLk9JmGZD2HDBHCU4z16iYKmx5SE"
+        );
     }
 
     #[test]
