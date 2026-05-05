@@ -1,7 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fmt;
+use std::{fmt, path::PathBuf, process::Stdio};
+use tokio::{process::{Child, Command}, time::{Duration, Instant}};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
@@ -13,6 +14,7 @@ pub enum Error {
     WebSocket(tokio_tungstenite::tungstenite::Error),
     Http(reqwest::Error),
     Json(serde_json::Error),
+    Io(std::io::Error),
     Protocol(String),
     InvalidIpfsHash(String),
 }
@@ -23,6 +25,7 @@ impl fmt::Display for Error {
             Self::WebSocket(error) => write!(f, "websocket error: {error}"),
             Self::Http(error) => write!(f, "http error: {error}"),
             Self::Json(error) => write!(f, "json error: {error}"),
+            Self::Io(error) => write!(f, "io error: {error}"),
             Self::Protocol(message) => write!(f, "protocol error: {message}"),
             Self::InvalidIpfsHash(message) => write!(f, "invalid ipfs hash: {message}"),
         }
@@ -46,6 +49,12 @@ impl From<reqwest::Error> for Error {
 impl From<serde_json::Error> for Error {
     fn from(value: serde_json::Error) -> Self {
         Self::Json(value)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
     }
 }
 
@@ -165,7 +174,6 @@ impl KuboClient {
     pub async fn id(&self) -> Result<KuboIdResponse, Error> {
         let url = format!("{}/api/v0/id", self.base_url);
         let timeout = std::time::Duration::from_secs(10);
-        info!(%url, timeout_secs = timeout.as_secs(), "starting kubo id request");
 
         let response = self.http.post(&url).timeout(timeout).send().await?;
         let status = response.status();
@@ -217,9 +225,96 @@ impl KuboClient {
     }
 }
 
+fn resolve_kubo_repo_dir() -> Result<PathBuf, Error> {
+    match home::home_dir() {
+        Some(mut path) => {
+            path.push(".local/share/acuity-ipfs-pinner");
+            path.push("ipfs-repo");
+            Ok(path)
+        }
+        None => Err(Error::Protocol("no home directory".into())),
+    }
+}
+
+async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<(), Error> {
+    if repo_dir.join("config").exists() {
+        return Ok(());
+    }
+
+    info!(repo_dir = %repo_dir.display(), "initializing kubo repo");
+    std::fs::create_dir_all(repo_dir)?;
+
+    let output = Command::new("ipfs")
+        .arg("init")
+        .arg("--repo-dir")
+        .arg(repo_dir)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Err(Error::Protocol(format!(
+            "ipfs init failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    Ok(())
+}
+
+async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<(), Error> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        if let Some(status) = daemon.try_wait()? {
+            return Err(Error::Protocol(format!(
+                "ipfs daemon exited before becoming available: {status}"
+            )));
+        }
+
+        match kubo.id().await {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    return Err(Error::Protocol(format!(
+                        "timed out waiting for kubo api: {error}"
+                    )));
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>, Error> {
+    let repo_dir = resolve_kubo_repo_dir()?;
+
+    if kubo.id().await.is_ok() {
+        info!(repo_dir = %repo_dir.display(), "kubo api already available");
+        return Ok(None);
+    }
+
+    ensure_kubo_repo_initialized(&repo_dir).await?;
+
+    info!(repo_dir = %repo_dir.display(), "starting ipfs daemon");
+    let mut daemon = Command::new("ipfs")
+        .arg("daemon")
+        .arg("--repo-dir")
+        .arg(&repo_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    wait_for_kubo_api(kubo, &mut daemon).await?;
+    info!(repo_dir = %repo_dir.display(), "ipfs daemon is available");
+    Ok(Some(daemon))
+}
+
 pub async fn run(config: Config) -> Result<(), Error> {
     let pinner = KuboClient::new(config.kubo_api_url.clone());
-    pinner.id().await?;
+    let _kubo_daemon = start_kubo_daemon(&pinner).await?;
 
     loop {
         match run_once(&config, pinner.clone()).await {

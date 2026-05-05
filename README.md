@@ -11,7 +11,8 @@ A small Rust service that subscribes to live `Content.PublishRevision` events fr
 - reads `decodedEvent.event.fields.ipfs_hash`
 - converts the on-chain 32-byte digest hex into a normal CIDv0 string
 - calls the local Kubo API to pin the CID
-- stores no state on disk
+- stores the Kubo repo at `~/.local/share/acuity-ipfs-pinner/ipfs-repo`
+- starts `ipfs daemon --repo-dir <repo>` automatically and waits for the API to become available
 
 Historical events are not handled.
 
@@ -86,7 +87,13 @@ This matches the logic used in `acuity-dioxus`.
 
 - Rust toolchain
 - a running `acuity-index` instance
-- a running local or reachable Kubo API
+- the `ipfs` CLI installed locally
+
+By default the embedded Kubo daemon uses this repo path:
+
+```text
+~/.local/share/acuity-ipfs-pinner/ipfs-repo
+```
 
 Example Kubo endpoint:
 
