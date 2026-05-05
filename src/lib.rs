@@ -1,7 +1,13 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fmt, path::PathBuf, process::Stdio};
+use std::{
+    collections::BTreeSet,
+    fmt,
+    net::IpAddr,
+    path::PathBuf,
+    process::Stdio,
+};
 use tokio::{
     process::{Child, Command},
     signal,
@@ -308,7 +314,87 @@ async fn configure_kubo_swarm_addresses(repo_dir: &std::path::Path) -> Result<()
     }
 }
 
-async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<(), Error> {
+fn is_local_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified(),
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.segments()[0] & 0xffc0 == 0xfec0
+        }
+    }
+}
+
+fn normalize_ws_multiaddr(address: &str, peer_id: &str) -> Option<String> {
+    let protocol = if address.starts_with("/ip4/") {
+        "/ip4/"
+    } else if address.starts_with("/ip6/") {
+        "/ip6/"
+    } else {
+        return None;
+    };
+
+    let Some(ws_index) = address.find("/ws") else {
+        return None;
+    };
+
+    let ws_suffix = &address[ws_index..];
+    if ws_suffix != "/ws" && !ws_suffix.starts_with("/ws/") {
+        return None;
+    }
+
+    let after_protocol = &address[protocol.len()..];
+    let ip_end = after_protocol.find('/')?;
+    after_protocol[..ip_end].parse::<IpAddr>().ok()?;
+    let base = if let Some(p2p_index) = address.find("/p2p/") {
+        &address[..p2p_index]
+    } else {
+        address
+    };
+
+    Some(format!("{}/p2p/{}", base.trim_end_matches('/'), peer_id))
+}
+
+fn log_kubo_ws_multiaddrs(id: &KuboIdResponse) {
+    let mut local = BTreeSet::new();
+    let mut external = BTreeSet::new();
+
+    for address in &id.addresses {
+        let Some(normalized) = normalize_ws_multiaddr(address, &id.id) else {
+            continue;
+        };
+
+        let ip = if let Some(rest) = normalized.strip_prefix("/ip4/") {
+            rest.split('/').next().and_then(|value| value.parse().ok())
+        } else if let Some(rest) = normalized.strip_prefix("/ip6/") {
+            rest.split('/').next().and_then(|value| value.parse().ok())
+        } else {
+            None
+        };
+
+        let Some(ip) = ip else {
+            continue;
+        };
+
+        if is_local_ip(ip) {
+            local.insert(normalized);
+        } else {
+            external.insert(normalized);
+        }
+    }
+
+    for address in local {
+        info!("{address}");
+    }
+
+    for address in external {
+        info!("{address}");
+    }
+}
+
+async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<KuboIdResponse, Error> {
     let deadline = Instant::now() + Duration::from_secs(30);
 
     loop {
@@ -319,7 +405,7 @@ async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<(), 
         }
 
         match kubo.id().await {
-            Ok(_) => return Ok(()),
+            Ok(id) => return Ok(id),
             Err(error) => {
                 if Instant::now() >= deadline {
                     return Err(Error::Protocol(format!(
@@ -336,8 +422,9 @@ async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<(), 
 async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>, Error> {
     let repo_dir = resolve_kubo_repo_dir()?;
 
-    if kubo.id().await.is_ok() {
+    if let Ok(id) = kubo.id().await {
         info!(repo_dir = %repo_dir.display(), "kubo api already available");
+        log_kubo_ws_multiaddrs(&id);
         return Ok(None);
     }
 
@@ -354,8 +441,9 @@ async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>, Error> {
         .stderr(Stdio::null())
         .spawn()?;
 
-    wait_for_kubo_api(kubo, &mut daemon).await?;
+    let id = wait_for_kubo_api(kubo, &mut daemon).await?;
     info!(repo_dir = %repo_dir.display(), "ipfs daemon is available");
+    log_kubo_ws_multiaddrs(&id);
     Ok(Some(daemon))
 }
 

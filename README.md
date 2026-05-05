@@ -15,6 +15,7 @@ A small Rust service that subscribes to live `Content.PublishRevision` events fr
 - runs `ipfs init --repo-dir <repo>` on startup and logs whether the repo was created or already existed
 - runs `ipfs config --json Addresses.Swarm ... --repo-dir <repo>` before starting the daemon
 - starts `ipfs daemon --repo-dir <repo>` automatically and waits for the API to become available
+- logs each IPv4/IPv6 WebSocket swarm multiaddr reported by Kubo after startup, including the `/p2p/<peer-id>` suffix
 
 Historical events are not handled.
 
