@@ -271,6 +271,43 @@ async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<(), 
     }
 }
 
+async fn configure_kubo_swarm_addresses(repo_dir: &std::path::Path) -> Result<(), Error> {
+    const SWARM_ADDRESSES: &str = r#"[
+  "/ip4/0.0.0.0/tcp/4001",
+  "/ip4/0.0.0.0/tcp/4002/ws",
+  "/ip6/::/tcp/4001",
+  "/ip6/::/tcp/4002/ws",
+  "/ip4/0.0.0.0/udp/4001/webrtc-direct",
+  "/ip4/0.0.0.0/udp/4001/quic-v1",
+  "/ip4/0.0.0.0/udp/4001/quic-v1/webtransport",
+  "/ip6/::/udp/4001/webrtc-direct",
+  "/ip6/::/udp/4001/quic-v1",
+  "/ip6/::/udp/4001/quic-v1/webtransport"
+]"#;
+
+    info!(repo_dir = %repo_dir.display(), "configuring kubo swarm addresses");
+    let output = Command::new("ipfs")
+        .arg("config")
+        .arg("--json")
+        .arg("Addresses.Swarm")
+        .arg(SWARM_ADDRESSES)
+        .arg("--repo-dir")
+        .arg(repo_dir)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        info!(repo_dir = %repo_dir.display(), "configured kubo swarm addresses");
+        Ok(())
+    } else {
+        Err(Error::Protocol(format!(
+            "ipfs config Addresses.Swarm failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
+}
+
 async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<(), Error> {
     let deadline = Instant::now() + Duration::from_secs(30);
 
@@ -305,6 +342,7 @@ async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>, Error> {
     }
 
     ensure_kubo_repo_initialized(&repo_dir).await?;
+    configure_kubo_swarm_addresses(&repo_dir).await?;
 
     info!(repo_dir = %repo_dir.display(), "starting ipfs daemon");
     let mut daemon = Command::new("ipfs")

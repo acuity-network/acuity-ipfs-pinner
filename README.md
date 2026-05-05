@@ -13,6 +13,7 @@ A small Rust service that subscribes to live `Content.PublishRevision` events fr
 - calls the local Kubo API to pin the CID
 - stores the Kubo repo at `~/.local/share/acuity-ipfs-pinner/ipfs-repo`
 - runs `ipfs init --repo-dir <repo>` on startup and logs whether the repo was created or already existed
+- runs `ipfs config --json Addresses.Swarm ... --repo-dir <repo>` before starting the daemon
 - starts `ipfs daemon --repo-dir <repo>` automatically and waits for the API to become available
 
 Historical events are not handled.
