@@ -8,11 +8,11 @@ use crate::{
     error::Error,
     indexer::{
         close_indexer_connection, extract_publish_revision, lookup_publish_revision_variant,
-        subscribe_to_variant,
+        parse_indexer_message, subscribe_to_variant,
     },
-    kubo::{start_kubo_daemon, stop_kubo_daemon, KuboClient},
+    kubo::{KuboClient, start_kubo_daemon, stop_kubo_daemon},
     protobuf::extract_image_cids_from_item_bytes,
-    types::{PublishRevision, SubscriptionNotification},
+    types::{IndexerMessage, PublishRevision},
 };
 
 pub async fn run(config: Config) -> Result<(), Error> {
@@ -72,8 +72,8 @@ async fn run_once(config: &Config, pinner: KuboClient) -> Result<(), Error> {
                 };
                 let message = message?;
                 if let Message::Text(text) = message {
-                    match serde_json::from_str::<SubscriptionNotification>(&text) {
-                        Ok(notification) => {
+                    match parse_indexer_message::<serde::de::IgnoredAny>(&text) {
+                        Ok(Some(IndexerMessage::Notification(notification))) => {
                             info!(
                                 subscription = %notification.params.subscription,
                                 method = %notification.method,
@@ -96,8 +96,11 @@ async fn run_once(config: &Config, pinner: KuboClient) -> Result<(), Error> {
                                 }
                             }
                         }
-                        Err(_) => {
+                        Ok(Some(IndexerMessage::Response(_))) | Ok(None) => {
                             // Ignore JSON-RPC responses and unrelated messages.
+                        }
+                        Err(error) => {
+                            warn!(error = %error, payload = %text, "ignoring malformed indexer message");
                         }
                     }
                 }
@@ -139,7 +142,9 @@ async fn pin_revision_and_images(pin_client: KuboClient, revision: PublishRevisi
 
             match pin_client.cat(&revision.cid).await {
                 Ok(item_bytes) => match extract_image_cids_from_item_bytes(&item_bytes) {
-                    Ok(image_cids) => log_and_pin_image_cids(&pin_client, &revision, image_cids).await,
+                    Ok(image_cids) => {
+                        log_and_pin_image_cids(&pin_client, &revision, image_cids).await
+                    }
                     Err(error) => {
                         warn!(
                             item_id = revision.item_id.as_deref().unwrap_or("<missing>"),

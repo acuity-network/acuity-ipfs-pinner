@@ -14,15 +14,18 @@ pub use config::{Config, DEFAULT_INDEXER_URL, DEFAULT_KUBO_API_URL};
 pub use error::Error;
 pub use indexer::{
     close_indexer_connection, extract_publish_revision, lookup_publish_revision_variant,
-    subscribe_to_variant,
+    parse_indexer_message, subscribe_to_variant,
 };
-pub use kubo::{start_kubo_daemon, stop_kubo_daemon, KuboClient};
-pub use protobuf::{ImageMixinMessage, ItemMessage, MixinPayloadMessage, MipmapLevelMessage, IMAGE_MIXIN_ID};
+pub use kubo::{KuboClient, start_kubo_daemon, stop_kubo_daemon};
+pub use protobuf::{
+    IMAGE_MIXIN_ID, ImageMixinMessage, ItemMessage, MipmapLevelMessage, MixinPayloadMessage,
+};
 pub use service::run;
 pub use types::{
-    DecodedEvent, EventMeta, EventRef, JsonRpcResponse, KuboIdResponse, MetadataResult,
-    NotificationParams, NotificationResult, PalletMeta, PublishRevision,
-    SubscriptionNotification,
+    DecodedChainEvent, DecodedEvent, EventMeta, EventRef, IndexerMessage, JsonRpcError,
+    JsonRpcMessage, JsonRpcPayload, JsonRpcResponse, KuboIdResponse, MetadataResult,
+    NotificationParams, NotificationResult, PalletMeta, PublishRevision, PublishRevisionFields,
+    SubscriptionKey, SubscriptionNotification,
 };
 
 #[cfg(test)]

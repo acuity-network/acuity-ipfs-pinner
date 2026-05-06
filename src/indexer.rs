@@ -1,5 +1,4 @@
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
@@ -7,8 +6,8 @@ use crate::{
     cid::digest_hex_to_cid,
     error::Error,
     types::{
-        JsonRpcResponse, MetadataResult, NotificationResult, PublishRevision,
-        SubscriptionNotification,
+        DecodedChainEvent, IndexerMessage, JsonRpcPayload, JsonRpcResponse, MetadataResult,
+        NotificationResult, PublishRevision, SubscriptionNotification,
     },
 };
 
@@ -58,22 +57,24 @@ where
         + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + Unpin,
 {
+    const REQUEST_ID: u64 = 1;
+
     let request = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": REQUEST_ID,
         "method": "acuity_getEventMetadata",
         "params": {}
     });
-    ws.send(Message::Text(request.to_string().into())).await?;
+    ws.send(Message::Text(request.to_string())).await?;
 
     while let Some(message) = ws.next().await {
         let text = match message? {
             Message::Text(text) => text,
             _ => continue,
         };
-        let response: JsonRpcResponse<MetadataResult> = match serde_json::from_str(&text) {
-            Ok(response) => response,
-            Err(_) => continue,
+        let Some(response) = parse_json_rpc_response_by_id::<MetadataResult>(&text, REQUEST_ID)?
+        else {
+            continue;
         };
 
         let pallet = response
@@ -107,9 +108,11 @@ where
         + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + Unpin,
 {
+    const REQUEST_ID: u64 = 2;
+
     let request = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": REQUEST_ID,
         "method": "acuity_subscribeEvents",
         "params": {
             "key": {
@@ -118,24 +121,17 @@ where
             }
         }
     });
-    ws.send(Message::Text(request.to_string().into())).await?;
+    ws.send(Message::Text(request.to_string())).await?;
 
     while let Some(message) = ws.next().await {
         let text = match message? {
             Message::Text(text) => text,
             _ => continue,
         };
-        let value: Value = match serde_json::from_str(&text) {
-            Ok(value) => value,
-            Err(_) => continue,
+        let Some(response) = parse_json_rpc_response_by_id::<String>(&text, REQUEST_ID)? else {
+            continue;
         };
-        if let Some(subscription_id) = value
-            .get("result")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-        {
-            return Ok(subscription_id);
-        }
+        return Ok(response.result);
     }
 
     Err(Error::Protocol(
@@ -158,43 +154,194 @@ pub fn extract_publish_revision(
         return Ok(None);
     };
 
-    let event = &decoded_event.event;
-    if event.get("palletName").and_then(Value::as_str) != Some("Content")
-        || event.get("eventName").and_then(Value::as_str) != Some("PublishRevision")
-    {
+    let DecodedChainEvent::ContentPublishRevision(fields) = &decoded_event.event else {
         return Ok(None);
-    }
+    };
 
-    let fields = event
-        .get("fields")
-        .and_then(Value::as_object)
-        .ok_or_else(|| Error::Protocol("Content.PublishRevision missing fields".into()))?;
+    info!(?fields, "decoded Content.PublishRevision fields");
 
-    info!(fields = %serde_json::Value::Object(fields.clone()), "decoded Content.PublishRevision fields");
-
-    let ipfs_hash = fields
-        .get("ipfs_hash")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Protocol("Content.PublishRevision missing fields.ipfs_hash".into()))?;
+    let ipfs_hash = fields.ipfs_hash.as_deref().ok_or_else(|| {
+        Error::Protocol("Content.PublishRevision missing fields.ipfs_hash".into())
+    })?;
 
     Ok(Some(PublishRevision {
-        item_id: fields
-            .get("item_id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        owner: fields
-            .get("owner")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        revision_id: fields.get("revision_id").and_then(parse_u32_value),
+        item_id: fields.item_id.clone(),
+        owner: fields.owner.clone(),
+        revision_id: fields.revision_id,
         cid: digest_hex_to_cid(ipfs_hash)?,
     }))
 }
 
-fn parse_u32_value(value: &Value) -> Option<u32> {
-    match value {
-        Value::Number(number) => number.as_u64().and_then(|value| u32::try_from(value).ok()),
-        Value::String(string) => string.parse::<u32>().ok(),
-        _ => None,
+pub fn parse_indexer_message<T>(text: &str) -> Result<Option<IndexerMessage<T>>, Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match serde_json::from_str(text) {
+        Ok(message) => Ok(Some(message)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn parse_json_rpc_response_by_id<T>(
+    text: &str,
+    expected_id: u64,
+) -> Result<Option<JsonRpcResponse<T>>, Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(IndexerMessage::Response(response)) = parse_indexer_message::<T>(text)? else {
+        return Ok(None);
+    };
+
+    if response.id != expected_id {
+        return Ok(None);
+    }
+
+    match response.payload {
+        JsonRpcPayload::Result { result } => Ok(Some(JsonRpcResponse {
+            id: response.id,
+            result,
+        })),
+        JsonRpcPayload::Error { error } => Err(Error::Protocol(format!(
+            "json-rpc request {} failed (code {}): {}{}",
+            expected_id,
+            error.code,
+            error.message,
+            error
+                .data
+                .map(|data| format!("; data: {data}"))
+                .unwrap_or_default()
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_indexer_message, parse_json_rpc_response_by_id};
+    use crate::{
+        DecodedChainEvent, IndexerMessage, MetadataResult, PalletMeta, SubscriptionKey,
+        SubscriptionNotification,
+    };
+
+    #[test]
+    fn parse_json_rpc_response_by_id_ignores_other_request_ids() {
+        let text = r#"{"jsonrpc":"2.0","id":99,"result":{"pallets":[]}}"#;
+
+        let response = parse_json_rpc_response_by_id::<MetadataResult>(text, 1).unwrap();
+        assert!(response.is_none());
+    }
+
+    #[test]
+    fn parse_json_rpc_response_by_id_returns_matching_response() {
+        let text = r#"{"jsonrpc":"2.0","id":1,"result":{"pallets":[{"index":4,"name":"Content","events":[]}]}}"#;
+
+        let response = parse_json_rpc_response_by_id::<MetadataResult>(text, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.id, 1);
+        assert_eq!(response.result.pallets.len(), 1);
+        assert_eq!(
+            response.result.pallets,
+            vec![PalletMeta {
+                index: 4,
+                name: "Content".into(),
+                events: vec![],
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_json_rpc_response_by_id_surfaces_matching_errors() {
+        let text = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom"}}"#;
+
+        let error = parse_json_rpc_response_by_id::<String>(text, 2).unwrap_err();
+        assert!(matches!(error, crate::Error::Protocol(_)));
+    }
+
+    #[test]
+    fn parse_indexer_message_parses_subscription_notifications() {
+        let text = r#"{
+            "method": "acuity_subscription",
+            "params": {
+                "subscription": "sub_1",
+                "result": {
+                    "type": "event",
+                    "key": {"type": "Variant", "value": [4, 1]},
+                    "event": {"blockNumber": 10, "eventIndex": 2},
+                    "decodedEvent": {
+                        "blockNumber": 10,
+                        "eventIndex": 2,
+                        "event": {
+                            "specVersion": 1,
+                            "palletName": "Content",
+                            "eventName": "PublishRevision",
+                            "fields": {
+                                "item_id": "0x01",
+                                "owner": "5abc",
+                                "revision_id": "7",
+                                "ipfs_hash": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+                            }
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let message = parse_indexer_message::<serde::de::IgnoredAny>(text)
+            .unwrap()
+            .unwrap();
+
+        match message {
+            IndexerMessage::Notification(notification) => match notification.params.result {
+                crate::NotificationResult::Event { key, .. } => {
+                    assert_eq!(key, SubscriptionKey::Variant { value: [4, 1] });
+                }
+                _ => panic!("expected event notification"),
+            },
+            _ => panic!("expected notification"),
+        }
+    }
+
+    #[test]
+    fn publish_revision_without_fields_deserializes_to_typed_empty_fields() {
+        let notification: SubscriptionNotification = serde_json::from_value(serde_json::json!({
+            "method": "acuity_subscription",
+            "params": {
+                "subscription": "sub_1",
+                "result": {
+                    "type": "event",
+                    "key": {"type": "Variant", "value": [4, 1]},
+                    "event": {"blockNumber": 10, "eventIndex": 2},
+                    "decodedEvent": {
+                        "blockNumber": 10,
+                        "eventIndex": 2,
+                        "event": {
+                            "specVersion": 1,
+                            "palletName": "Content",
+                            "eventName": "PublishRevision"
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let crate::NotificationResult::Event {
+            decoded_event: Some(decoded_event),
+            ..
+        } = notification.params.result
+        else {
+            panic!("expected event notification");
+        };
+
+        match decoded_event.event {
+            DecodedChainEvent::ContentPublishRevision(fields) => {
+                assert_eq!(fields.item_id, None);
+                assert_eq!(fields.owner, None);
+                assert_eq!(fields.revision_id, None);
+                assert_eq!(fields.ipfs_hash, None);
+            }
+            _ => panic!("expected publish revision event"),
+        }
     }
 }
