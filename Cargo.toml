@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bs58 = "0.5"
+clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 hex = "0.4"
 home = "0.5"

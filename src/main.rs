@@ -1,4 +1,5 @@
 use acuity_ipfs_pinner::{Cli, Config, run};
+use clap::Parser;
 use tracing::error;
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -11,7 +12,7 @@ async fn main() {
         )
         .init();
 
-    let cli = Cli::parse_from_env();
+    let cli = Cli::parse();
     let config = Config {
         indexer_url: cli.indexer_url,
         kubo_api_url: cli.kubo_api_url,
