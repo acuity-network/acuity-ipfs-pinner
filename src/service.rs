@@ -1,3 +1,4 @@
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use tokio::{signal, time::Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -5,7 +6,6 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
-    error::Error,
     indexer::{
         close_indexer_connection, extract_publish_revision, lookup_publish_revision_variant,
         parse_indexer_message, subscribe_to_variant,
@@ -15,7 +15,7 @@ use crate::{
     types::{IndexerMessage, PublishRevision},
 };
 
-pub async fn run(config: Config) -> Result<(), Error> {
+pub async fn run(config: Config) -> Result<()> {
     let pinner = KuboClient::new(config.kubo_api_url.clone());
     let mut kubo_daemon = start_kubo_daemon(&pinner).await?;
 
@@ -44,7 +44,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
     Ok(())
 }
 
-async fn run_once(config: &Config, pinner: KuboClient) -> Result<(), Error> {
+async fn run_once(config: &Config, pinner: KuboClient) -> Result<()> {
     let (mut ws, _) = connect_async(&config.indexer_url).await?;
     info!(indexer_url = %config.indexer_url, kubo_api_url = %config.kubo_api_url, "network connections established");
 
@@ -108,7 +108,7 @@ async fn run_once(config: &Config, pinner: KuboClient) -> Result<(), Error> {
         }
     }
 
-    Err(Error::Protocol("indexer websocket closed".into()))
+    Err(anyhow!("indexer websocket closed"))
 }
 
 fn log_queued_revision(revision: &PublishRevision) {

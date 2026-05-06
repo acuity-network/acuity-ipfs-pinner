@@ -1,10 +1,10 @@
+use anyhow::{Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use crate::{
     cid::digest_hex_to_cid,
-    error::Error,
     types::{
         DecodedChainEvent, IndexerMessage, JsonRpcPayload, JsonRpcResponse, MetadataResult,
         NotificationResult, PublishRevision, SubscriptionNotification,
@@ -15,11 +15,12 @@ pub async fn close_indexer_connection<S>(
     ws: &mut S,
     indexer_url: &str,
     subscription_id: &str,
-) -> Result<(), Error>
+) -> Result<()>
 where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
-        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-        + Unpin,
+        + futures_util::Stream<
+            Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
 {
     info!(
         indexer_url,
@@ -51,11 +52,12 @@ where
     Ok(())
 }
 
-pub async fn lookup_publish_revision_variant<S>(ws: &mut S) -> Result<(u8, u8), Error>
+pub async fn lookup_publish_revision_variant<S>(ws: &mut S) -> Result<(u8, u8)>
 where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
-        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-        + Unpin,
+        + futures_util::Stream<
+            Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
 {
     const REQUEST_ID: u64 = 1;
 
@@ -82,19 +84,17 @@ where
             .pallets
             .into_iter()
             .find(|pallet| pallet.name == "Content")
-            .ok_or_else(|| Error::Protocol("Content pallet not found in event metadata".into()))?;
+            .ok_or_else(|| anyhow!("Content pallet not found in event metadata"))?;
         let event = pallet
             .events
             .into_iter()
             .find(|event| event.name == "PublishRevision")
-            .ok_or_else(|| {
-                Error::Protocol("Content.PublishRevision not found in event metadata".into())
-            })?;
+            .ok_or_else(|| anyhow!("Content.PublishRevision not found in event metadata"))?;
         return Ok((pallet.index, event.index));
     }
 
-    Err(Error::Protocol(
-        "websocket closed before event metadata response arrived".into(),
+    Err(anyhow!(
+        "websocket closed before event metadata response arrived"
     ))
 }
 
@@ -102,11 +102,12 @@ pub async fn subscribe_to_variant<S>(
     ws: &mut S,
     pallet_index: u8,
     event_index: u8,
-) -> Result<String, Error>
+) -> Result<String>
 where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
-        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-        + Unpin,
+        + futures_util::Stream<
+            Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
 {
     const REQUEST_ID: u64 = 2;
 
@@ -134,14 +135,14 @@ where
         return Ok(response.result);
     }
 
-    Err(Error::Protocol(
-        "websocket closed before subscribe response arrived".into(),
+    Err(anyhow!(
+        "websocket closed before subscribe response arrived"
     ))
 }
 
 pub fn extract_publish_revision(
     notification: &SubscriptionNotification,
-) -> Result<Option<PublishRevision>, Error> {
+) -> Result<Option<PublishRevision>> {
     if notification.method != "acuity_subscription" {
         return Ok(None);
     }
@@ -160,9 +161,10 @@ pub fn extract_publish_revision(
 
     info!(?fields, "decoded Content.PublishRevision fields");
 
-    let ipfs_hash = fields.ipfs_hash.as_deref().ok_or_else(|| {
-        Error::Protocol("Content.PublishRevision missing fields.ipfs_hash".into())
-    })?;
+    let ipfs_hash = fields
+        .ipfs_hash
+        .as_deref()
+        .ok_or_else(|| anyhow!("Content.PublishRevision missing fields.ipfs_hash"))?;
 
     Ok(Some(PublishRevision {
         item_id: fields.item_id.clone(),
@@ -172,7 +174,7 @@ pub fn extract_publish_revision(
     }))
 }
 
-pub fn parse_indexer_message<T>(text: &str) -> Result<Option<IndexerMessage<T>>, Error>
+pub fn parse_indexer_message<T>(text: &str) -> Result<Option<IndexerMessage<T>>>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -185,7 +187,7 @@ where
 fn parse_json_rpc_response_by_id<T>(
     text: &str,
     expected_id: u64,
-) -> Result<Option<JsonRpcResponse<T>>, Error>
+) -> Result<Option<JsonRpcResponse<T>>>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -202,7 +204,7 @@ where
             id: response.id,
             result,
         })),
-        JsonRpcPayload::Error { error } => Err(Error::Protocol(format!(
+        JsonRpcPayload::Error { error } => Err(anyhow!(
             "json-rpc request {} failed (code {}): {}{}",
             expected_id,
             error.code,
@@ -211,7 +213,7 @@ where
                 .data
                 .map(|data| format!("; data: {data}"))
                 .unwrap_or_default()
-        ))),
+        )),
     }
 }
 
@@ -255,7 +257,7 @@ mod tests {
         let text = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom"}}"#;
 
         let error = parse_json_rpc_response_by_id::<String>(text, 2).unwrap_err();
-        assert!(matches!(error, crate::Error::Protocol(_)));
+        assert!(error.to_string().contains("json-rpc request 2 failed"));
     }
 
     #[test]

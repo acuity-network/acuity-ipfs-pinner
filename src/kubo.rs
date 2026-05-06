@@ -1,12 +1,13 @@
 use std::{collections::BTreeSet, net::IpAddr, path::PathBuf, process::Stdio};
 
+use anyhow::{Result, anyhow};
 use tokio::{
     process::{Child, Command},
     time::{Duration, Instant},
 };
 use tracing::{info, warn};
 
-use crate::{error::Error, types::KuboIdResponse};
+use crate::types::KuboIdResponse;
 
 #[derive(Clone)]
 pub struct KuboClient {
@@ -22,7 +23,7 @@ impl KuboClient {
         }
     }
 
-    pub async fn id(&self) -> Result<KuboIdResponse, Error> {
+    pub async fn id(&self) -> Result<KuboIdResponse> {
         let url = format!("{}/api/v0/id", self.base_url);
         let timeout = std::time::Duration::from_secs(10);
 
@@ -32,9 +33,7 @@ impl KuboClient {
 
         if !status.is_success() {
             warn!(%url, %status, body = %body, "kubo id request failed");
-            return Err(Error::Protocol(format!(
-                "kubo id failed with status {status}: {body}"
-            )));
+            return Err(anyhow!("kubo id failed with status {status}: {body}"));
         }
 
         let id = serde_json::from_str::<KuboIdResponse>(&body)?;
@@ -48,7 +47,7 @@ impl KuboClient {
         Ok(id)
     }
 
-    pub async fn pin(&self, cid: &str) -> Result<(), Error> {
+    pub async fn pin(&self, cid: &str) -> Result<()> {
         let url = format!("{}/api/v0/pin/add", self.base_url);
         let timeout = std::time::Duration::from_secs(30);
         info!(cid = %cid, %url, timeout_secs = timeout.as_secs(), "starting kubo pin/add request");
@@ -66,16 +65,14 @@ impl KuboClient {
 
         if !status.is_success() {
             warn!(cid = %cid, %url, %status, body = %body, "kubo pin/add failed");
-            return Err(Error::Protocol(format!(
-                "kubo pin/add failed with status {status}: {body}"
-            )));
+            return Err(anyhow!("kubo pin/add failed with status {status}: {body}"));
         }
 
         info!(cid = %cid, %url, %status, body = %body, "kubo pin/add completed");
         Ok(())
     }
 
-    pub async fn cat(&self, cid: &str) -> Result<Vec<u8>, Error> {
+    pub async fn cat(&self, cid: &str) -> Result<Vec<u8>> {
         let url = format!("{}/api/v0/cat", self.base_url);
         let timeout = std::time::Duration::from_secs(30);
         info!(cid = %cid, %url, timeout_secs = timeout.as_secs(), "starting kubo cat request");
@@ -92,9 +89,7 @@ impl KuboClient {
         if !status.is_success() {
             let body = response.text().await?;
             warn!(cid = %cid, %url, %status, body = %body, "kubo cat failed");
-            return Err(Error::Protocol(format!(
-                "kubo cat failed with status {status}: {body}"
-            )));
+            return Err(anyhow!("kubo cat failed with status {status}: {body}"));
         }
 
         let bytes = response.bytes().await?.to_vec();
@@ -103,18 +98,18 @@ impl KuboClient {
     }
 }
 
-fn resolve_kubo_repo_dir() -> Result<PathBuf, Error> {
+fn resolve_kubo_repo_dir() -> Result<PathBuf> {
     match home::home_dir() {
         Some(mut path) => {
             path.push(".local/share/acuity-ipfs-pinner");
             path.push("ipfs-repo");
             Ok(path)
         }
-        None => Err(Error::Protocol("no home directory".into())),
+        None => Err(anyhow!("no home directory")),
     }
 }
 
-async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<(), Error> {
+async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<()> {
     info!(repo_dir = %repo_dir.display(), "initializing kubo repo");
 
     if let Some(parent_dir) = repo_dir.parent() {
@@ -137,15 +132,15 @@ async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<(), 
             info!(repo_dir = %repo_dir.display(), "kubo repo already existed");
             Ok(())
         }
-        _ => Err(Error::Protocol(format!(
+        _ => Err(anyhow!(
             "ipfs init failed with status {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
-        ))),
+        )),
     }
 }
 
-async fn configure_kubo_swarm_addresses(repo_dir: &std::path::Path) -> Result<(), Error> {
+async fn configure_kubo_swarm_addresses(repo_dir: &std::path::Path) -> Result<()> {
     const SWARM_ADDRESSES: &str = r#"[
   \"/ip4/0.0.0.0/tcp/4001\",
   \"/ip4/0.0.0.0/tcp/4002/ws\",
@@ -174,11 +169,11 @@ async fn configure_kubo_swarm_addresses(repo_dir: &std::path::Path) -> Result<()
         info!(repo_dir = %repo_dir.display(), "configured kubo swarm addresses");
         Ok(())
     } else {
-        Err(Error::Protocol(format!(
+        Err(anyhow!(
             "ipfs config Addresses.Swarm failed with status {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
-        )))
+        ))
     }
 }
 
@@ -206,9 +201,7 @@ fn normalize_ws_multiaddr(address: &str, peer_id: &str) -> Option<String> {
         return None;
     };
 
-    let Some(ws_index) = address.find("/ws") else {
-        return None;
-    };
+    let ws_index = address.find("/ws")?;
 
     let ws_suffix = &address[ws_index..];
     if ws_suffix != "/ws" && !ws_suffix.starts_with("/ws/") {
@@ -264,23 +257,21 @@ fn log_kubo_ws_multiaddrs(id: &KuboIdResponse) {
     }
 }
 
-async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<KuboIdResponse, Error> {
+async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<KuboIdResponse> {
     let deadline = Instant::now() + Duration::from_secs(30);
 
     loop {
         if let Some(status) = daemon.try_wait()? {
-            return Err(Error::Protocol(format!(
+            return Err(anyhow!(
                 "ipfs daemon exited before becoming available: {status}"
-            )));
+            ));
         }
 
         match kubo.id().await {
             Ok(id) => return Ok(id),
             Err(error) => {
                 if Instant::now() >= deadline {
-                    return Err(Error::Protocol(format!(
-                        "timed out waiting for kubo api: {error}"
-                    )));
+                    return Err(anyhow!("timed out waiting for kubo api: {error}"));
                 }
             }
         }
@@ -289,7 +280,7 @@ async fn wait_for_kubo_api(kubo: &KuboClient, daemon: &mut Child) -> Result<Kubo
     }
 }
 
-pub async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>, Error> {
+pub async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>> {
     let repo_dir = resolve_kubo_repo_dir()?;
 
     if let Ok(id) = kubo.id().await {
@@ -317,14 +308,14 @@ pub async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>, Error
     Ok(Some(daemon))
 }
 
-pub async fn stop_kubo_daemon(daemon: &mut Child) -> Result<(), Error> {
+pub async fn stop_kubo_daemon(daemon: &mut Child) -> Result<()> {
     if let Some(status) = daemon.try_wait()? {
         info!(status = %status, "ipfs daemon already exited");
         return Ok(());
     }
 
     let Some(pid) = daemon.id() else {
-        return Err(Error::Protocol("ipfs daemon pid unavailable".into()));
+        return Err(anyhow!("ipfs daemon pid unavailable"));
     };
 
     info!(pid, "sending SIGINT to ipfs daemon");
@@ -335,9 +326,7 @@ pub async fn stop_kubo_daemon(daemon: &mut Child) -> Result<(), Error> {
         .await?;
 
     if !status.success() {
-        return Err(Error::Protocol(format!(
-            "failed to send SIGINT to ipfs daemon: {status}"
-        )));
+        return Err(anyhow!("failed to send SIGINT to ipfs daemon: {status}"));
     }
 
     match tokio::time::timeout(Duration::from_secs(30), daemon.wait()).await {

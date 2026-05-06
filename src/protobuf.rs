@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
+use anyhow::Result;
 use prost::Message as ProstMessage;
 
-use crate::{cid::multihash_bytes_to_cid, error::Error};
+use crate::cid::multihash_bytes_to_cid;
 
 pub const IMAGE_MIXIN_ID: u32 = 0x045e_ee8c;
 
@@ -44,7 +45,7 @@ pub struct MipmapLevelMessage {
     pub ipfs_hash: Vec<u8>,
 }
 
-pub(crate) fn extract_image_cids_from_item_bytes(bytes: &[u8]) -> Result<Vec<String>, Error> {
+pub(crate) fn extract_image_cids_from_item_bytes(bytes: &[u8]) -> Result<Vec<String>> {
     let item = ItemMessage::decode(bytes)?;
     let mut cids = BTreeSet::new();
 

@@ -1,14 +1,13 @@
-use crate::error::Error;
+use anyhow::{Result, anyhow};
 
-pub fn hex_to_bytes32(hex_value: &str) -> Result<[u8; 32], Error> {
-    let raw = hex::decode(hex_value.trim_start_matches("0x")).map_err(|error| {
-        Error::InvalidIpfsHash(format!("invalid hex value {hex_value}: {error}"))
-    })?;
+pub fn hex_to_bytes32(hex_value: &str) -> Result<[u8; 32]> {
+    let raw = hex::decode(hex_value.trim_start_matches("0x"))
+        .map_err(|error| anyhow!("invalid hex value {hex_value}: {error}"))?;
     raw.try_into()
-        .map_err(|_| Error::InvalidIpfsHash(format!("expected 32 bytes for {hex_value}")))
+        .map_err(|_| anyhow!("expected 32 bytes for {hex_value}"))
 }
 
-pub fn digest_hex_to_cid(hex_value: &str) -> Result<String, Error> {
+pub fn digest_hex_to_cid(hex_value: &str) -> Result<String> {
     let digest = hex_to_bytes32(hex_value)?;
     Ok(multihash_bytes_to_cid(&digest_to_multihash_bytes(&digest)))
 }

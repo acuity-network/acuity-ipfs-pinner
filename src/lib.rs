@@ -1,7 +1,6 @@
 mod cid;
 mod cli;
 mod config;
-mod error;
 mod indexer;
 mod kubo;
 mod protobuf;
@@ -11,7 +10,6 @@ mod types;
 pub use cid::{digest_hex_to_cid, hex_to_bytes32};
 pub use cli::Cli;
 pub use config::{Config, DEFAULT_INDEXER_URL, DEFAULT_KUBO_API_URL};
-pub use error::Error;
 pub use indexer::{
     close_indexer_connection, extract_publish_revision, lookup_publish_revision_variant,
     parse_indexer_message, subscribe_to_variant,
@@ -144,10 +142,12 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(matches!(
-            extract_publish_revision(&notification),
-            Err(Error::Protocol(_))
-        ));
+        let error = extract_publish_revision(&notification).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Content.PublishRevision missing fields.ipfs_hash")
+        );
     }
 
     #[test]
