@@ -1,13 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
+use prost::Message as ProstMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    collections::BTreeSet,
-    fmt,
-    net::IpAddr,
-    path::PathBuf,
-    process::Stdio,
-};
+use std::{collections::BTreeSet, fmt, net::IpAddr, path::PathBuf, process::Stdio};
 use tokio::{
     process::{Child, Command},
     signal,
@@ -25,6 +20,7 @@ pub enum Error {
     Http(reqwest::Error),
     Json(serde_json::Error),
     Io(std::io::Error),
+    ProstDecode(prost::DecodeError),
     Protocol(String),
     InvalidIpfsHash(String),
 }
@@ -36,6 +32,7 @@ impl fmt::Display for Error {
             Self::Http(error) => write!(f, "http error: {error}"),
             Self::Json(error) => write!(f, "json error: {error}"),
             Self::Io(error) => write!(f, "io error: {error}"),
+            Self::ProstDecode(error) => write!(f, "protobuf decode error: {error}"),
             Self::Protocol(message) => write!(f, "protocol error: {message}"),
             Self::InvalidIpfsHash(message) => write!(f, "invalid ipfs hash: {message}"),
         }
@@ -65,6 +62,12 @@ impl From<serde_json::Error> for Error {
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
+    }
+}
+
+impl From<prost::DecodeError> for Error {
+    fn from(value: prost::DecodeError) -> Self {
+        Self::ProstDecode(value)
     }
 }
 
@@ -233,6 +236,33 @@ impl KuboClient {
         info!(cid = %cid, %url, %status, body = %body, "kubo pin/add completed");
         Ok(())
     }
+
+    pub async fn cat(&self, cid: &str) -> Result<Vec<u8>, Error> {
+        let url = format!("{}/api/v0/cat", self.base_url);
+        let timeout = std::time::Duration::from_secs(30);
+        info!(cid = %cid, %url, timeout_secs = timeout.as_secs(), "starting kubo cat request");
+
+        let response = self
+            .http
+            .post(&url)
+            .query(&[("arg", cid)])
+            .timeout(timeout)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await?;
+            warn!(cid = %cid, %url, %status, body = %body, "kubo cat failed");
+            return Err(Error::Protocol(format!(
+                "kubo cat failed with status {status}: {body}"
+            )));
+        }
+
+        let bytes = response.bytes().await?.to_vec();
+        info!(cid = %cid, %url, %status, byte_len = bytes.len(), "kubo cat completed");
+        Ok(bytes)
+    }
 }
 
 fn resolve_kubo_repo_dir() -> Result<PathBuf, Error> {
@@ -316,7 +346,9 @@ async fn configure_kubo_swarm_addresses(repo_dir: &std::path::Path) -> Result<()
 
 fn is_local_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified(),
+        IpAddr::V4(ip) => {
+            ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
+        }
         IpAddr::V6(ip) => {
             ip.is_loopback()
                 || ip.is_unspecified()
@@ -621,6 +653,87 @@ async fn run_once(config: &Config, pinner: KuboClient) -> Result<(), Error> {
                                                     cid = %revision.cid,
                                                     "pinned content"
                                                 );
+
+                                                match pin_client.cat(&revision.cid).await {
+                                                    Ok(item_bytes) => match extract_image_cids_from_item_bytes(&item_bytes) {
+                                                        Ok(image_cids) => {
+                                                            if image_cids.is_empty() {
+                                                                info!(
+                                                                    item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                                    owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                                    revision_id = revision.revision_id.unwrap_or_default(),
+                                                                    cid = %revision.cid,
+                                                                    "no image mixin CIDs found in pinned content"
+                                                                );
+                                                            } else {
+                                                                info!(
+                                                                    item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                                    owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                                    revision_id = revision.revision_id.unwrap_or_default(),
+                                                                    cid = %revision.cid,
+                                                                    image_cid_count = image_cids.len(),
+                                                                    image_cids = ?image_cids,
+                                                                    "extracted image mixin CIDs from pinned content"
+                                                                );
+
+                                                                for image_cid in image_cids {
+                                                                    info!(
+                                                                        item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                                        owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                                        revision_id = revision.revision_id.unwrap_or_default(),
+                                                                        parent_cid = %revision.cid,
+                                                                        cid = %image_cid,
+                                                                        "pinning image mixin content"
+                                                                    );
+
+                                                                    match pin_client.pin(&image_cid).await {
+                                                                        Ok(()) => {
+                                                                            info!(
+                                                                                item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                                                owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                                                revision_id = revision.revision_id.unwrap_or_default(),
+                                                                                parent_cid = %revision.cid,
+                                                                                cid = %image_cid,
+                                                                                "pinned image mixin content"
+                                                                            );
+                                                                        }
+                                                                        Err(error) => {
+                                                                            warn!(
+                                                                                item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                                                owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                                                revision_id = revision.revision_id.unwrap_or_default(),
+                                                                                parent_cid = %revision.cid,
+                                                                                cid = %image_cid,
+                                                                                error = %error,
+                                                                                "image mixin pin failed"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(error) => {
+                                                            warn!(
+                                                                item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                                owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                                revision_id = revision.revision_id.unwrap_or_default(),
+                                                                cid = %revision.cid,
+                                                                error = %error,
+                                                                "failed to decode pinned content protobuf for image extraction"
+                                                            );
+                                                        }
+                                                    },
+                                                    Err(error) => {
+                                                        warn!(
+                                                            item_id = revision.item_id.as_deref().unwrap_or("<missing>"),
+                                                            owner = revision.owner.as_deref().unwrap_or("<missing>"),
+                                                            revision_id = revision.revision_id.unwrap_or_default(),
+                                                            cid = %revision.cid,
+                                                            error = %error,
+                                                            "failed to read pinned content from kubo for image extraction"
+                                                        );
+                                                    }
+                                                }
                                             }
                                             Err(error) => {
                                                 warn!(
@@ -744,6 +857,46 @@ where
     ))
 }
 
+pub const IMAGE_MIXIN_ID: u32 = 0x045e_ee8c;
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ItemMessage {
+    #[prost(message, repeated, tag = "1")]
+    pub mixin_payload: Vec<MixinPayloadMessage>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct MixinPayloadMessage {
+    #[prost(fixed32, tag = "1")]
+    pub mixin_id: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ImageMixinMessage {
+    #[prost(string, tag = "1")]
+    pub filename: String,
+    #[prost(uint64, tag = "2")]
+    pub filesize: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub ipfs_hash: Vec<u8>,
+    #[prost(uint32, tag = "4")]
+    pub width: u32,
+    #[prost(uint32, tag = "5")]
+    pub height: u32,
+    #[prost(message, repeated, tag = "6")]
+    pub mipmap_level: Vec<MipmapLevelMessage>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct MipmapLevelMessage {
+    #[prost(uint64, tag = "1")]
+    pub filesize: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub ipfs_hash: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishRevision {
     pub item_id: Option<String>,
@@ -820,11 +973,42 @@ pub fn hex_to_bytes32(hex_value: &str) -> Result<[u8; 32], Error> {
 
 pub fn digest_hex_to_cid(hex_value: &str) -> Result<String, Error> {
     let digest = hex_to_bytes32(hex_value)?;
+    Ok(multihash_bytes_to_cid(&digest_to_multihash_bytes(&digest)))
+}
+
+fn digest_to_multihash_bytes(digest: &[u8; 32]) -> Vec<u8> {
     let mut multihash = Vec::with_capacity(34);
     multihash.push(0x12);
     multihash.push(0x20);
-    multihash.extend_from_slice(&digest);
-    Ok(bs58::encode(multihash).into_string())
+    multihash.extend_from_slice(digest);
+    multihash
+}
+
+fn multihash_bytes_to_cid(multihash: &[u8]) -> String {
+    bs58::encode(multihash).into_string()
+}
+
+fn extract_image_cids_from_item_bytes(bytes: &[u8]) -> Result<Vec<String>, Error> {
+    let item = ItemMessage::decode(bytes)?;
+    let mut cids = BTreeSet::new();
+
+    for mixin in item.mixin_payload {
+        if mixin.mixin_id != IMAGE_MIXIN_ID {
+            continue;
+        }
+
+        let image = ImageMixinMessage::decode(mixin.payload.as_slice())?;
+        if !image.ipfs_hash.is_empty() {
+            cids.insert(multihash_bytes_to_cid(&image.ipfs_hash));
+        }
+        for mipmap in image.mipmap_level {
+            if !mipmap.ipfs_hash.is_empty() {
+                cids.insert(multihash_bytes_to_cid(&mipmap.ipfs_hash));
+            }
+        }
+    }
+
+    Ok(cids.into_iter().collect())
 }
 
 #[derive(Debug, Serialize)]
@@ -985,5 +1169,90 @@ mod tests {
             extract_publish_revision(&notification),
             Err(Error::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn extract_image_cids_from_item_bytes_collects_primary_and_mipmaps() {
+        let primary = digest_to_multihash_bytes(&[0x11; 32]);
+        let mip_1 = digest_to_multihash_bytes(&[0x22; 32]);
+        let mip_2 = digest_to_multihash_bytes(&[0x33; 32]);
+
+        let bytes = ItemMessage {
+            mixin_payload: vec![MixinPayloadMessage {
+                mixin_id: IMAGE_MIXIN_ID,
+                payload: ImageMixinMessage {
+                    filename: "example.jpg".into(),
+                    filesize: 123,
+                    ipfs_hash: primary.clone(),
+                    width: 640,
+                    height: 480,
+                    mipmap_level: vec![
+                        MipmapLevelMessage {
+                            filesize: 100,
+                            ipfs_hash: mip_1.clone(),
+                        },
+                        MipmapLevelMessage {
+                            filesize: 50,
+                            ipfs_hash: mip_2.clone(),
+                        },
+                    ],
+                }
+                .encode_to_vec(),
+            }],
+        }
+        .encode_to_vec();
+
+        let cids = extract_image_cids_from_item_bytes(&bytes).unwrap();
+        assert_eq!(
+            cids,
+            vec![
+                multihash_bytes_to_cid(&primary),
+                multihash_bytes_to_cid(&mip_1),
+                multihash_bytes_to_cid(&mip_2),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_image_cids_from_item_bytes_deduplicates_and_ignores_empty_hashes() {
+        let shared = digest_to_multihash_bytes(&[0x44; 32]);
+
+        let bytes = ItemMessage {
+            mixin_payload: vec![
+                MixinPayloadMessage {
+                    mixin_id: 123,
+                    payload: vec![1, 2, 3],
+                },
+                MixinPayloadMessage {
+                    mixin_id: IMAGE_MIXIN_ID,
+                    payload: ImageMixinMessage {
+                        filename: String::new(),
+                        filesize: 0,
+                        ipfs_hash: Vec::new(),
+                        width: 0,
+                        height: 0,
+                        mipmap_level: vec![
+                            MipmapLevelMessage {
+                                filesize: 1,
+                                ipfs_hash: shared.clone(),
+                            },
+                            MipmapLevelMessage {
+                                filesize: 2,
+                                ipfs_hash: shared.clone(),
+                            },
+                            MipmapLevelMessage {
+                                filesize: 3,
+                                ipfs_hash: Vec::new(),
+                            },
+                        ],
+                    }
+                    .encode_to_vec(),
+                },
+            ],
+        }
+        .encode_to_vec();
+
+        let cids = extract_image_cids_from_item_bytes(&bytes).unwrap();
+        assert_eq!(cids, vec![multihash_bytes_to_cid(&shared)]);
     }
 }

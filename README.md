@@ -1,6 +1,6 @@
 # acuity-ipfs-pinner
 
-A small Rust service that subscribes to live `Content.PublishRevision` events from `acuity-index` and pins the referenced IPFS content to a local Kubo node.
+A small Rust service that subscribes to live `Content.PublishRevision` events from `acuity-index`, pins the referenced IPFS content to a local Kubo node, then inspects the protobuf item payload for image mixins and pins every embedded image CID too.
 
 ## What it does
 
@@ -10,7 +10,12 @@ A small Rust service that subscribes to live `Content.PublishRevision` events fr
 - subscribes to live events with `acuity_subscribeEvents`
 - reads `decodedEvent.event.fields.ipfs_hash`
 - converts the on-chain 32-byte digest hex into a normal CIDv0 string
-- calls the local Kubo API to pin the CID
+- calls the local Kubo API to pin the revision CID
+- fetches the pinned revision bytes back from Kubo with `cat`
+- decodes the protobuf `ItemMessage`
+- scans `IMAGE_MIXIN_ID = 0x045e_ee8c`
+- extracts `ImageMixinMessage.ipfs_hash` and every `mipmap_level[*].ipfs_hash`
+- pins every extracted image CID and logs the list
 - stores the Kubo repo at `~/.local/share/acuity-ipfs-pinner/ipfs-repo`
 - runs `ipfs init --repo-dir <repo>` on startup and logs whether the repo was created or already existed
 - runs `ipfs config --json Addresses.Swarm ... --repo-dir <repo>` before starting the daemon
@@ -73,6 +78,10 @@ cargo build --release
    - extract `fields.ipfs_hash`
    - convert the digest to CIDv0
    - call Kubo `pin/add`
+   - fetch the revision bytes from Kubo
+   - decode the protobuf item payload
+   - extract and log image CIDs from any image mixins
+   - call Kubo `pin/add` for each extracted image CID
 6. If the WebSocket connection drops, retry after a short delay.
 
 ## IPFS hash conversion
@@ -85,6 +94,16 @@ This service converts it to a CIDv0 by:
 - base58btc-encoding the result
 
 This matches the logic used in `acuity-dioxus`.
+
+## Image mixin protobuf layout
+
+From `acuity-dioxus/src/content.rs`, images are stored inside an `ImageMixinMessage` with:
+
+- `ipfs_hash` at field `3`
+- repeated `mipmap_level` entries at field `6`
+- each `MipmapLevelMessage` stores its CID multihash bytes in `ipfs_hash` at field `2`
+
+`acuity-dioxus` currently uploads JPEG mipmaps to IPFS and stores those multihash bytes directly in `mipmap_level[*].ipfs_hash`. The top-level `ipfs_hash` is presently left empty in normal publishing code, but this pinner supports both locations.
 
 ## Requirements
 
