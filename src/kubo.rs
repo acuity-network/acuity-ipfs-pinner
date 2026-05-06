@@ -344,3 +344,51 @@ pub async fn stop_kubo_daemon(daemon: &mut Child) -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_kubo_repo_dir_uses_expected_suffix() {
+        let path = resolve_kubo_repo_dir().unwrap();
+        assert!(path.ends_with(".local/share/acuity-ipfs-pinner/ipfs-repo"));
+    }
+
+    #[test]
+    fn is_local_ip_classifies_local_and_external_addresses() {
+        assert!(is_local_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_local_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_local_ip("169.254.1.1".parse().unwrap()));
+        assert!(is_local_ip("0.0.0.0".parse().unwrap()));
+        assert!(is_local_ip("::1".parse().unwrap()));
+        assert!(is_local_ip("fc00::1".parse().unwrap()));
+        assert!(is_local_ip("fe80::1".parse().unwrap()));
+        assert!(!is_local_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_local_ip("2001:4860:4860::8888".parse().unwrap()));
+    }
+
+    #[test]
+    fn normalize_ws_multiaddr_accepts_supported_addresses() {
+        assert_eq!(
+            normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002/ws", "peer"),
+            Some("/ip4/127.0.0.1/tcp/4002/ws/p2p/peer".into())
+        );
+        assert_eq!(
+            normalize_ws_multiaddr("/ip6/::1/tcp/4002/ws/p2p/old", "peer"),
+            Some("/ip6/::1/tcp/4002/ws/p2p/peer".into())
+        );
+        assert_eq!(
+            normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002/ws/extra", "peer"),
+            Some("/ip4/127.0.0.1/tcp/4002/ws/extra/p2p/peer".into())
+        );
+    }
+
+    #[test]
+    fn normalize_ws_multiaddr_rejects_invalid_addresses() {
+        assert_eq!(normalize_ws_multiaddr("/dns4/example.com/tcp/4002/ws", "peer"), None);
+        assert_eq!(normalize_ws_multiaddr("/ip4/not-an-ip/tcp/4002/ws", "peer"), None);
+        assert_eq!(normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002/wss", "peer"), None);
+        assert_eq!(normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002", "peer"), None);
+    }
+}

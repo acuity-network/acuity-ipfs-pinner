@@ -67,3 +67,30 @@ pub(crate) fn extract_image_cids_from_item_bytes(bytes: &[u8]) -> Result<Vec<Str
 
     Ok(cids.into_iter().collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use prost::Message as ProstMessage;
+
+    use super::*;
+
+    #[test]
+    fn extract_image_cids_from_item_bytes_rejects_invalid_item_bytes() {
+        let error = extract_image_cids_from_item_bytes(&[0xff]).unwrap_err();
+        assert!(error.to_string().contains("failed to decode Protobuf message"));
+    }
+
+    #[test]
+    fn extract_image_cids_from_item_bytes_rejects_invalid_image_payload() {
+        let bytes = ItemMessage {
+            mixin_payload: vec![MixinPayloadMessage {
+                mixin_id: IMAGE_MIXIN_ID,
+                payload: vec![0xff],
+            }],
+        }
+        .encode_to_vec();
+
+        let error = extract_image_cids_from_item_bytes(&bytes).unwrap_err();
+        assert!(error.to_string().contains("failed to decode Protobuf message"));
+    }
+}

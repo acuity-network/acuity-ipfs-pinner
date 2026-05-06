@@ -197,3 +197,106 @@ pub struct PublishRevision {
     pub revision_id: Option<u32>,
     pub cid: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_optional_u32_accepts_number_string_and_null() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "deserialize_optional_u32")]
+            value: Option<u32>,
+        }
+
+        assert_eq!(serde_json::from_str::<Wrapper>(r#"{"value":7}"#).unwrap().value, Some(7));
+        assert_eq!(
+            serde_json::from_str::<Wrapper>(r#"{"value":"8"}"#)
+                .unwrap()
+                .value,
+            Some(8)
+        );
+        assert_eq!(
+            serde_json::from_str::<Wrapper>(r#"{"value":null}"#)
+                .unwrap()
+                .value,
+            None
+        );
+        assert_eq!(serde_json::from_str::<Wrapper>(r#"{}"#).unwrap().value, None);
+    }
+
+    #[test]
+    fn deserialize_optional_u32_rejects_invalid_values() {
+        #[allow(dead_code)]
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_optional_u32")]
+            value: Option<u32>,
+        }
+
+        let error = serde_json::from_str::<Wrapper>(r#"{"value":-1}"#)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("invalid u32 number"));
+
+        let error = serde_json::from_str::<Wrapper>(r#"{"value":"abc"}"#)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("invalid u32 string"));
+    }
+
+    #[test]
+    fn decoded_chain_event_deserializes_non_publish_revision_as_other() {
+        let event: DecodedChainEvent = serde_json::from_value(serde_json::json!({
+            "palletName": "Balances",
+            "eventName": "Deposit",
+            "fields": {"amount": "10"}
+        }))
+        .unwrap();
+
+        match event {
+            DecodedChainEvent::Other {
+                pallet_name,
+                event_name,
+            } => {
+                assert_eq!(pallet_name, "Balances");
+                assert_eq!(event_name, "Deposit");
+            }
+            _ => panic!("expected other event"),
+        }
+    }
+
+    #[test]
+    fn notification_result_supports_status_and_terminated_variants() {
+        let status: NotificationResult = serde_json::from_value(serde_json::json!({
+            "type": "status",
+            "spans": []
+        }))
+        .unwrap();
+        assert!(matches!(status, NotificationResult::Status { .. }));
+
+        let terminated: NotificationResult = serde_json::from_value(serde_json::json!({
+            "type": "terminated",
+            "reason": "bye",
+            "message": "closed"
+        }))
+        .unwrap();
+        match terminated {
+            NotificationResult::Terminated { reason, message } => {
+                assert_eq!(reason, "bye");
+                assert_eq!(message, "closed");
+            }
+            _ => panic!("expected terminated notification"),
+        }
+    }
+
+    #[test]
+    fn subscription_key_unknown_variant_deserializes() {
+        let key: SubscriptionKey = serde_json::from_value(serde_json::json!({
+            "type": "SomethingElse"
+        }))
+        .unwrap();
+        assert_eq!(key, SubscriptionKey::Unknown);
+    }
+}

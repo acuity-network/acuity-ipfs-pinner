@@ -15,3 +15,15 @@ impl Default for Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_uses_expected_urls() {
+        let config = Config::default();
+        assert_eq!(config.indexer_url, DEFAULT_INDEXER_URL);
+        assert_eq!(config.kubo_api_url, DEFAULT_KUBO_API_URL);
+    }
+}

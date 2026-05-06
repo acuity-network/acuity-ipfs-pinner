@@ -242,3 +242,28 @@ async fn log_and_pin_image_cids(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_queued_revision_handles_missing_fields() {
+        log_queued_revision(&PublishRevision {
+            item_id: None,
+            owner: None,
+            revision_id: None,
+            cid: "QmParent".into(),
+        });
+    }
+
+    #[test]
+    fn log_queued_revision_handles_present_fields() {
+        log_queued_revision(&PublishRevision {
+            item_id: Some("item".into()),
+            owner: Some("owner".into()),
+            revision_id: Some(7),
+            cid: "QmParent".into(),
+        });
+    }
+}

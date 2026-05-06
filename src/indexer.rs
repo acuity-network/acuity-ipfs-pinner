@@ -219,7 +219,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_indexer_message, parse_json_rpc_response_by_id};
+    use super::{extract_publish_revision, parse_indexer_message, parse_json_rpc_response_by_id};
     use crate::{
         DecodedChainEvent, IndexerMessage, MetadataResult, PalletMeta, SubscriptionKey,
         SubscriptionNotification,
@@ -258,6 +258,25 @@ mod tests {
 
         let error = parse_json_rpc_response_by_id::<String>(text, 2).unwrap_err();
         assert!(error.to_string().contains("json-rpc request 2 failed"));
+    }
+
+    #[test]
+    fn parse_json_rpc_response_by_id_includes_error_data() {
+        let text = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom","data":{"detail":"x"}}}"#;
+
+        let error = parse_json_rpc_response_by_id::<String>(text, 2).unwrap_err();
+        assert!(error.to_string().contains("data: {\"detail\":\"x\"}"));
+    }
+
+    #[test]
+    fn parse_json_rpc_response_by_id_ignores_non_responses() {
+        let text = r#"{"method":"acuity_subscription","params":{"subscription":"sub_1","result":{"type":"status","spans":[]}}}"#;
+        assert!(parse_json_rpc_response_by_id::<String>(text, 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_indexer_message_returns_none_for_invalid_json() {
+        assert!(parse_indexer_message::<String>("not-json").unwrap().is_none());
     }
 
     #[test]
@@ -345,5 +364,36 @@ mod tests {
             }
             _ => panic!("expected publish revision event"),
         }
+    }
+
+    #[test]
+    fn extract_publish_revision_ignores_non_subscription_method() {
+        let notification: SubscriptionNotification = serde_json::from_value(serde_json::json!({
+            "method": "other_method",
+            "params": {
+                "subscription": "sub_1",
+                "result": {"type": "status", "spans": []}
+            }
+        }))
+        .unwrap();
+        assert!(extract_publish_revision(&notification).unwrap().is_none());
+    }
+
+    #[test]
+    fn extract_publish_revision_ignores_missing_decoded_event() {
+        let notification: SubscriptionNotification = serde_json::from_value(serde_json::json!({
+            "method": "acuity_subscription",
+            "params": {
+                "subscription": "sub_1",
+                "result": {
+                    "type": "event",
+                    "key": {"type": "Variant", "value": [4, 1]},
+                    "event": {"blockNumber": 10, "eventIndex": 2},
+                    "decodedEvent": null
+                }
+            }
+        }))
+        .unwrap();
+        assert!(extract_publish_revision(&notification).unwrap().is_none());
     }
 }

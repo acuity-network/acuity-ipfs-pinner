@@ -27,3 +27,28 @@ pub struct Cli {
     #[arg(long, default_value = DEFAULT_KUBO_API_URL)]
     pub kubo_api_url: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_uses_default_urls() {
+        let cli = Cli::parse_from(["acuity-ipfs-pinner"]);
+        assert_eq!(cli.indexer_url, DEFAULT_INDEXER_URL);
+        assert_eq!(cli.kubo_api_url, DEFAULT_KUBO_API_URL);
+    }
+
+    #[test]
+    fn cli_accepts_overrides() {
+        let cli = Cli::parse_from([
+            "acuity-ipfs-pinner",
+            "--indexer-url",
+            "ws://example.test:8172",
+            "--kubo-api-url",
+            "http://example.test:5001",
+        ]);
+        assert_eq!(cli.indexer_url, "ws://example.test:8172");
+        assert_eq!(cli.kubo_api_url, "http://example.test:5001");
+    }
+}
