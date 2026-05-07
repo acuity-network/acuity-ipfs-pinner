@@ -157,6 +157,7 @@ mod tests {
         let mip_2 = digest_to_multihash_bytes(&[0x33; 32]);
 
         let bytes = ItemMessage {
+            content_type_id: 5,
             mixin_payload: vec![MixinPayloadMessage {
                 mixin_id: IMAGE_MIXIN_ID,
                 payload: ImageMixinMessage {
@@ -197,6 +198,7 @@ mod tests {
         let shared = digest_to_multihash_bytes(&[0x44; 32]);
 
         let bytes = ItemMessage {
+            content_type_id: 4,
             mixin_payload: vec![
                 MixinPayloadMessage {
                     mixin_id: 123,

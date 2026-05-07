@@ -97,13 +97,20 @@ This matches the logic used in `acuity-dioxus`.
 
 ## Image mixin protobuf layout
 
-From `acuity-dioxus/src/content.rs`, images are stored inside an `ImageMixinMessage` with:
+From the updated content encoding, `ItemMessage` now stores:
+
+- `content_type_id` at field `1`
+- repeated `mixin_payload` entries at field `2`
+
+Images are stored inside an `ImageMixinMessage` with:
 
 - `ipfs_hash` at field `3`
 - repeated `mipmap_level` entries at field `6`
 - each `MipmapLevelMessage` stores its CID multihash bytes in `ipfs_hash` at field `2`
 
-`acuity-dioxus` currently uploads JPEG mipmaps to IPFS and stores those multihash bytes directly in `mipmap_level[*].ipfs_hash`. The top-level `ipfs_hash` is presently left empty in normal publishing code, but this pinner supports both locations.
+Publishing code now sets `content_type_id` explicitly, but this pinner only needs the image mixins and ignores the specific content type value.
+
+JPEG mipmaps are stored directly in `mipmap_level[*].ipfs_hash`. The top-level `ipfs_hash` may still be empty, and this pinner supports both locations.
 
 ## Requirements
 

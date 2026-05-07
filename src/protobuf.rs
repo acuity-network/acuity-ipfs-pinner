@@ -9,7 +9,9 @@ pub const IMAGE_MIXIN_ID: u32 = 0x045e_ee8c;
 
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct ItemMessage {
-    #[prost(message, repeated, tag = "1")]
+    #[prost(uint32, tag = "1")]
+    pub content_type_id: u32,
+    #[prost(message, repeated, tag = "2")]
     pub mixin_payload: Vec<MixinPayloadMessage>,
 }
 
@@ -83,6 +85,7 @@ mod tests {
     #[test]
     fn extract_image_cids_from_item_bytes_rejects_invalid_image_payload() {
         let bytes = ItemMessage {
+            content_type_id: 0,
             mixin_payload: vec![MixinPayloadMessage {
                 mixin_id: IMAGE_MIXIN_ID,
                 payload: vec![0xff],
