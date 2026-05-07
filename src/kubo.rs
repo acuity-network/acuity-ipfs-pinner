@@ -9,6 +9,19 @@ use tracing::{info, warn};
 
 use crate::types::KuboIdResponse;
 
+const SWARM_ADDRESSES: &str = r#"[
+  "/ip4/0.0.0.0/tcp/4001",
+  "/ip4/0.0.0.0/tcp/4002/ws",
+  "/ip6/::/tcp/4001",
+  "/ip6/::/tcp/4002/ws",
+  "/ip4/0.0.0.0/udp/4001/webrtc-direct",
+  "/ip4/0.0.0.0/udp/4001/quic-v1",
+  "/ip4/0.0.0.0/udp/4001/quic-v1/webtransport",
+  "/ip6/::/udp/4001/webrtc-direct",
+  "/ip6/::/udp/4001/quic-v1",
+  "/ip6/::/udp/4001/quic-v1/webtransport"
+]"#;
+
 #[derive(Clone)]
 pub struct KuboClient {
     base_url: String,
@@ -141,19 +154,6 @@ async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<()> 
 }
 
 async fn configure_kubo_swarm_addresses(repo_dir: &std::path::Path) -> Result<()> {
-    const SWARM_ADDRESSES: &str = r#"[
-  \"/ip4/0.0.0.0/tcp/4001\",
-  \"/ip4/0.0.0.0/tcp/4002/ws\",
-  \"/ip6/::/tcp/4001\",
-  \"/ip6/::/tcp/4002/ws\",
-  \"/ip4/0.0.0.0/udp/4001/webrtc-direct\",
-  \"/ip4/0.0.0.0/udp/4001/quic-v1\",
-  \"/ip4/0.0.0.0/udp/4001/quic-v1/webtransport\",
-  \"/ip6/::/udp/4001/webrtc-direct\",
-  \"/ip6/::/udp/4001/quic-v1\",
-  \"/ip6/::/udp/4001/quic-v1/webtransport\"
-]"#;
-
     info!(repo_dir = %repo_dir.display(), "configuring kubo swarm addresses");
     let output = Command::new("ipfs")
         .arg("config")
@@ -390,5 +390,14 @@ mod tests {
         assert_eq!(normalize_ws_multiaddr("/ip4/not-an-ip/tcp/4002/ws", "peer"), None);
         assert_eq!(normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002/wss", "peer"), None);
         assert_eq!(normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002", "peer"), None);
+    }
+
+    #[test]
+    fn swarm_addresses_constant_is_valid_json() {
+        let addresses: Vec<String> = serde_json::from_str(SWARM_ADDRESSES).unwrap();
+
+        assert_eq!(addresses.len(), 10);
+        assert!(addresses.iter().any(|address| address == "/ip4/0.0.0.0/tcp/4001"));
+        assert!(addresses.iter().any(|address| address == "/ip6/::/udp/4001/quic-v1/webtransport"));
     }
 }
