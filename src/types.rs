@@ -209,7 +209,12 @@ mod tests {
             value: Option<u32>,
         }
 
-        assert_eq!(serde_json::from_str::<Wrapper>(r#"{"value":7}"#).unwrap().value, Some(7));
+        assert_eq!(
+            serde_json::from_str::<Wrapper>(r#"{"value":7}"#)
+                .unwrap()
+                .value,
+            Some(7)
+        );
         assert_eq!(
             serde_json::from_str::<Wrapper>(r#"{"value":"8"}"#)
                 .unwrap()
@@ -222,7 +227,10 @@ mod tests {
                 .value,
             None
         );
-        assert_eq!(serde_json::from_str::<Wrapper>(r#"{}"#).unwrap().value, None);
+        assert_eq!(
+            serde_json::from_str::<Wrapper>(r#"{}"#).unwrap().value,
+            None
+        );
     }
 
     #[test]

@@ -30,10 +30,9 @@ mod tests {
 
     #[test]
     fn hex_to_bytes32_accepts_prefixed_and_unprefixed_hex() {
-        let prefixed = hex_to_bytes32(
-            "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-        )
-        .unwrap();
+        let prefixed =
+            hex_to_bytes32("0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+                .unwrap();
         let unprefixed =
             hex_to_bytes32("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
                 .unwrap();

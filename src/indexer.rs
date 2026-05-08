@@ -267,12 +267,20 @@ mod tests {
     #[test]
     fn parse_json_rpc_response_by_id_ignores_non_responses() {
         let text = r#"{"method":"acuity_subscription","params":{"subscription":"sub_1","result":{"type":"status","spans":[]}}}"#;
-        assert!(parse_json_rpc_response_by_id::<String>(text, 1).unwrap().is_none());
+        assert!(
+            parse_json_rpc_response_by_id::<String>(text, 1)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn parse_indexer_message_returns_none_for_invalid_json() {
-        assert!(parse_indexer_message::<String>("not-json").unwrap().is_none());
+        assert!(
+            parse_indexer_message::<String>("not-json")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

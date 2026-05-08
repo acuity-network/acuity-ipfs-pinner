@@ -79,7 +79,11 @@ mod tests {
     #[test]
     fn extract_image_cids_from_item_bytes_rejects_invalid_item_bytes() {
         let error = extract_image_cids_from_item_bytes(&[0xff]).unwrap_err();
-        assert!(error.to_string().contains("failed to decode Protobuf message"));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to decode Protobuf message")
+        );
     }
 
     #[test]
@@ -94,6 +98,10 @@ mod tests {
         .encode_to_vec();
 
         let error = extract_image_cids_from_item_bytes(&bytes).unwrap_err();
-        assert!(error.to_string().contains("failed to decode Protobuf message"));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to decode Protobuf message")
+        );
     }
 }
