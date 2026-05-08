@@ -16,6 +16,7 @@ async fn main() {
     let config = Config {
         indexer_url: cli.indexer_url,
         kubo_api_url: cli.kubo_api_url,
+        ack_protocol: cli.ack_protocol,
     };
 
     if let Err(error) = run(config).await {

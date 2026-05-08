@@ -109,6 +109,60 @@ impl KuboClient {
         info!(cid = %cid, %url, %status, byte_len = bytes.len(), "kubo cat completed");
         Ok(bytes)
     }
+
+    pub async fn p2p_listen(&self, protocol: &str, target: &str) -> Result<()> {
+        let url = format!("{}/api/v0/p2p/listen", self.base_url);
+        let timeout = std::time::Duration::from_secs(10);
+        info!(%protocol, %target, %url, timeout_secs = timeout.as_secs(), "starting kubo p2p/listen request");
+
+        let response = self
+            .http
+            .post(&url)
+            .query(&[("arg", protocol), ("arg", target)])
+            .timeout(timeout)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            warn!(%protocol, %target, %url, %status, body = %body, "kubo p2p/listen failed");
+            return Err(anyhow!(
+                "kubo p2p/listen failed with status {status}: {body}"
+            ));
+        }
+
+        info!(%protocol, %target, %url, %status, body = %body, "kubo p2p/listen completed");
+        Ok(())
+    }
+
+    pub async fn p2p_close(&self, protocol: &str) -> Result<()> {
+        let url = format!("{}/api/v0/p2p/close", self.base_url);
+        let timeout = std::time::Duration::from_secs(10);
+        info!(%protocol, %url, timeout_secs = timeout.as_secs(), "starting kubo p2p/close request");
+
+        let response = self
+            .http
+            .post(&url)
+            .query(&[("protocol", protocol), ("all", "false")])
+            .timeout(timeout)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            warn!(%protocol, %url, %status, body = %body, "kubo p2p/close failed");
+            return Err(anyhow!(
+                "kubo p2p/close failed with status {status}: {body}"
+            ));
+        }
+
+        info!(%protocol, %url, %status, body = %body, "kubo p2p/close completed");
+        Ok(())
+    }
 }
 
 fn resolve_kubo_repo_dir() -> Result<PathBuf> {
@@ -150,6 +204,30 @@ async fn ensure_kubo_repo_initialized(repo_dir: &std::path::Path) -> Result<()> 
             output.status,
             String::from_utf8_lossy(&output.stderr)
         )),
+    }
+}
+
+async fn configure_kubo_stream_mounting(repo_dir: &std::path::Path) -> Result<()> {
+    info!(repo_dir = %repo_dir.display(), "enabling kubo libp2p stream mounting");
+    let output = Command::new("ipfs")
+        .arg("config")
+        .arg("--bool")
+        .arg("Experimental.Libp2pStreamMounting")
+        .arg("true")
+        .arg("--repo-dir")
+        .arg(repo_dir)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        info!(repo_dir = %repo_dir.display(), "enabled kubo libp2p stream mounting");
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "ipfs config Experimental.Libp2pStreamMounting failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -290,6 +368,7 @@ pub async fn start_kubo_daemon(kubo: &KuboClient) -> Result<Option<Child>> {
     }
 
     ensure_kubo_repo_initialized(&repo_dir).await?;
+    configure_kubo_stream_mounting(&repo_dir).await?;
     configure_kubo_swarm_addresses(&repo_dir).await?;
 
     info!(repo_dir = %repo_dir.display(), "starting ipfs daemon");
@@ -386,10 +465,22 @@ mod tests {
 
     #[test]
     fn normalize_ws_multiaddr_rejects_invalid_addresses() {
-        assert_eq!(normalize_ws_multiaddr("/dns4/example.com/tcp/4002/ws", "peer"), None);
-        assert_eq!(normalize_ws_multiaddr("/ip4/not-an-ip/tcp/4002/ws", "peer"), None);
-        assert_eq!(normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002/wss", "peer"), None);
-        assert_eq!(normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002", "peer"), None);
+        assert_eq!(
+            normalize_ws_multiaddr("/dns4/example.com/tcp/4002/ws", "peer"),
+            None
+        );
+        assert_eq!(
+            normalize_ws_multiaddr("/ip4/not-an-ip/tcp/4002/ws", "peer"),
+            None
+        );
+        assert_eq!(
+            normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002/wss", "peer"),
+            None
+        );
+        assert_eq!(
+            normalize_ws_multiaddr("/ip4/127.0.0.1/tcp/4002", "peer"),
+            None
+        );
     }
 
     #[test]
@@ -397,7 +488,15 @@ mod tests {
         let addresses: Vec<String> = serde_json::from_str(SWARM_ADDRESSES).unwrap();
 
         assert_eq!(addresses.len(), 10);
-        assert!(addresses.iter().any(|address| address == "/ip4/0.0.0.0/tcp/4001"));
-        assert!(addresses.iter().any(|address| address == "/ip6/::/udp/4001/quic-v1/webtransport"));
+        assert!(
+            addresses
+                .iter()
+                .any(|address| address == "/ip4/0.0.0.0/tcp/4001")
+        );
+        assert!(
+            addresses
+                .iter()
+                .any(|address| address == "/ip6/::/udp/4001/quic-v1/webtransport")
+        );
     }
 }
