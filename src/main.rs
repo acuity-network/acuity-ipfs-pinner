@@ -1,4 +1,4 @@
-use acuity_ipfs_pinner::{Cli, Config, run};
+use acuity_ipfs_pinner::{Cli, Config, normalize_ack_protocol, run};
 use clap::Parser;
 use tracing::error;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -16,7 +16,7 @@ async fn main() {
     let config = Config {
         indexer_url: cli.indexer_url,
         kubo_api_url: cli.kubo_api_url,
-        ack_protocol: cli.ack_protocol,
+        ack_protocol: normalize_ack_protocol(&cli.ack_protocol),
     };
 
     if let Err(error) = run(config).await {

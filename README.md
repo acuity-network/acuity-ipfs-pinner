@@ -43,7 +43,7 @@ Without variant indexing enabled, `acuity-index` cannot subscribe to all `Conten
 
 - acuity-index URL: `ws://127.0.0.1:8172`
 - Kubo API URL: `http://127.0.0.1:5001`
-- ACK protocol: `/acuity/ack/1.0.0`
+- ACK protocol: `/x/acuity/ack/1.0.0`
 
 ## Usage
 
@@ -59,7 +59,7 @@ Run with explicit URLs:
 cargo run -- \
   --indexer-url ws://127.0.0.1:8172 \
   --kubo-api-url http://127.0.0.1:5001 \
-  --ack-protocol /acuity/ack/1.0.0
+  --ack-protocol /x/acuity/ack/1.0.0
 ```
 
 Build a release binary:
@@ -73,7 +73,7 @@ cargo build --release
 
 - `--indexer-url <URL>`: `acuity-index` WebSocket endpoint
 - `--kubo-api-url <URL>`: Kubo HTTP API base URL
-- `--ack-protocol <PROTOCOL>`: custom libp2p stream protocol for CID push/ack
+- `--ack-protocol <PROTOCOL>`: custom libp2p stream protocol for CID push/ack; for Kubo `p2p/listen`, this must be in the `/x/...` namespace
 - `-h`, `--help`: show help
 
 ## How it works

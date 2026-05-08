@@ -11,7 +11,10 @@ mod types;
 pub use ack::{AckListenerHandle, start_ack_listener};
 pub use cid::{digest_hex_to_cid, hex_to_bytes32};
 pub use cli::Cli;
-pub use config::{Config, DEFAULT_ACK_PROTOCOL, DEFAULT_INDEXER_URL, DEFAULT_KUBO_API_URL};
+pub use config::{
+    Config, DEFAULT_ACK_PROTOCOL, DEFAULT_INDEXER_URL, DEFAULT_KUBO_API_URL,
+    normalize_ack_protocol,
+};
 pub use indexer::{
     close_indexer_connection, extract_publish_revision, lookup_publish_revision_variant,
     parse_indexer_message, subscribe_to_variant,

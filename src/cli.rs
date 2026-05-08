@@ -52,10 +52,10 @@ mod tests {
             "--kubo-api-url",
             "http://example.test:5001",
             "--ack-protocol",
-            "/myapp/ack/1.0.0",
+            "/x/myapp/ack/1.0.0",
         ]);
         assert_eq!(cli.indexer_url, "ws://example.test:8172");
         assert_eq!(cli.kubo_api_url, "http://example.test:5001");
-        assert_eq!(cli.ack_protocol, "/myapp/ack/1.0.0");
+        assert_eq!(cli.ack_protocol, "/x/myapp/ack/1.0.0");
     }
 }

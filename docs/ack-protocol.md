@@ -7,7 +7,7 @@ This document explains how the pinner's ACK mechanism works and how a Helia-base
 The pinner supports a custom libp2p protocol:
 
 ```text
-/acuity/ack/1.0.0
+/x/acuity/ack/1.0.0
 ```
 
 A publishing node can:
@@ -68,12 +68,12 @@ On startup, the pinner:
 The configured protocol defaults to:
 
 ```text
-/acuity/ack/1.0.0
+/x/acuity/ack/1.0.0
 ```
 
 Internally, the flow is:
 
-1. remote peer opens a libp2p stream to Kubo using `/acuity/ack/1.0.0`
+1. remote peer opens a libp2p stream to Kubo using `/x/acuity/ack/1.0.0`
 2. Kubo forwards that stream to the pinner's local TCP listener
 3. the pinner reads the stream payload as a CID string
 4. the pinner calls Kubo `cat <cid>`
@@ -128,7 +128,7 @@ import { unixfs } from '@helia/unixfs'
 import { pipe } from 'it-pipe'
 import all from 'it-all'
 
-const protocol = '/acuity/ack/1.0.0'
+const protocol = '/x/acuity/ack/1.0.0'
 
 async function main() {
   const helia = await createHelia()
@@ -207,7 +207,7 @@ import { multiaddr } from '@multiformats/multiaddr'
 import all from 'it-all'
 import { pipe } from 'it-pipe'
 
-const protocol = '/acuity/ack/1.0.0'
+const protocol = '/x/acuity/ack/1.0.0'
 
 async function main() {
   const helia = await createHelia()
@@ -314,7 +314,7 @@ The pinner exposes the ACK protocol as a CLI option:
 cargo run -- \
   --indexer-url ws://127.0.0.1:8172 \
   --kubo-api-url http://127.0.0.1:5001 \
-  --ack-protocol /acuity/ack/1.0.0
+  --ack-protocol /x/acuity/ack/1.0.0
 ```
 
 ## Summary
