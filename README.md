@@ -8,7 +8,7 @@ A small Rust service that subscribes to live `Content.PublishRevision` events fr
 - fetches event metadata with `acuity_getEventMetadata`
 - discovers the `Content.PublishRevision` variant index dynamically
 - subscribes to live events with `acuity_subscribeEvents`
-- reads `decodedEvent.event.fields.ipfs_hash`
+- reads `event.event.fields.ipfs_hash`
 - converts the on-chain 32-byte digest hex into a normal CIDv0 string
 - calls the local Kubo API to pin the revision CID
 - fetches the pinned revision bytes back from Kubo with `cat`
@@ -74,8 +74,8 @@ cargo build --release
 3. Find the pallet/event indexes for `Content.PublishRevision`.
 4. Subscribe using the `Variant` key.
 5. For each live notification:
-   - verify it is a `Content.PublishRevision`
-   - extract `fields.ipfs_hash`
+   - verify it is a hydrated `Content.PublishRevision`
+   - extract `event.event.fields.ipfs_hash`
    - convert the digest to CIDv0
    - call Kubo `pin/add`
    - fetch the revision bytes from Kubo

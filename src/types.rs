@@ -73,9 +73,7 @@ pub enum NotificationResult {
     },
     Event {
         key: SubscriptionKey,
-        event: EventRef,
-        #[serde(rename = "decodedEvent")]
-        decoded_event: Option<DecodedEvent>,
+        event: DecodedEvent,
     },
     Terminated {
         reason: String,
@@ -105,6 +103,7 @@ pub struct EventRef {
 pub struct DecodedEvent {
     pub block_number: u32,
     pub event_index: u32,
+    pub timestamp: u64,
     pub event: DecodedChainEvent,
 }
 

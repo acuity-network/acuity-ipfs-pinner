@@ -52,10 +52,10 @@ mod tests {
                 "result": {
                     "type": "event",
                     "key": {"type": "Variant", "value": [4, 1]},
-                    "event": {"blockNumber": 10, "eventIndex": 2},
-                    "decodedEvent": {
+                    "event": {
                         "blockNumber": 10,
                         "eventIndex": 2,
+                        "timestamp": 1717171717000_u64,
                         "event": {
                             "specVersion": 1,
                             "palletName": "Content",
@@ -98,10 +98,10 @@ mod tests {
                 "result": {
                     "type": "event",
                     "key": {"type": "Variant", "value": [4, 1]},
-                    "event": {"blockNumber": 10, "eventIndex": 2},
-                    "decodedEvent": {
+                    "event": {
                         "blockNumber": 10,
                         "eventIndex": 2,
+                        "timestamp": 1717171717000_u64,
                         "event": {
                             "specVersion": 1,
                             "palletName": "Balances",
@@ -126,10 +126,10 @@ mod tests {
                 "result": {
                     "type": "event",
                     "key": {"type": "Variant", "value": [4, 1]},
-                    "event": {"blockNumber": 10, "eventIndex": 2},
-                    "decodedEvent": {
+                    "event": {
                         "blockNumber": 10,
                         "eventIndex": 2,
+                        "timestamp": 1717171717000_u64,
                         "event": {
                             "specVersion": 1,
                             "palletName": "Content",

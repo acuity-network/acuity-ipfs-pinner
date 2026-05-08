@@ -147,15 +147,11 @@ pub fn extract_publish_revision(
         return Ok(None);
     }
 
-    let NotificationResult::Event {
-        decoded_event: Some(decoded_event),
-        ..
-    } = &notification.params.result
-    else {
+    let NotificationResult::Event { event, .. } = &notification.params.result else {
         return Ok(None);
     };
 
-    let DecodedChainEvent::ContentPublishRevision(fields) = &decoded_event.event else {
+    let DecodedChainEvent::ContentPublishRevision(fields) = &event.event else {
         return Ok(None);
     };
 
@@ -288,10 +284,10 @@ mod tests {
                 "result": {
                     "type": "event",
                     "key": {"type": "Variant", "value": [4, 1]},
-                    "event": {"blockNumber": 10, "eventIndex": 2},
-                    "decodedEvent": {
+                    "event": {
                         "blockNumber": 10,
                         "eventIndex": 2,
+                        "timestamp": 1717171717000,
                         "event": {
                             "specVersion": 1,
                             "palletName": "Content",
@@ -332,10 +328,10 @@ mod tests {
                 "result": {
                     "type": "event",
                     "key": {"type": "Variant", "value": [4, 1]},
-                    "event": {"blockNumber": 10, "eventIndex": 2},
-                    "decodedEvent": {
+                    "event": {
                         "blockNumber": 10,
                         "eventIndex": 2,
+                        "timestamp": 1717171717000_u64,
                         "event": {
                             "specVersion": 1,
                             "palletName": "Content",
@@ -347,15 +343,13 @@ mod tests {
         }))
         .unwrap();
 
-        let crate::NotificationResult::Event {
-            decoded_event: Some(decoded_event),
-            ..
-        } = notification.params.result
-        else {
+        let crate::NotificationResult::Event { event, .. } = notification.params.result else {
             panic!("expected event notification");
         };
 
-        match decoded_event.event {
+        assert_eq!(event.timestamp, 1717171717000);
+
+        match event.event {
             DecodedChainEvent::ContentPublishRevision(fields) => {
                 assert_eq!(fields.item_id, None);
                 assert_eq!(fields.owner, None);
@@ -380,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_publish_revision_ignores_missing_decoded_event() {
+    fn extract_publish_revision_ignores_non_publish_revision_event_payloads() {
         let notification: SubscriptionNotification = serde_json::from_value(serde_json::json!({
             "method": "acuity_subscription",
             "params": {
@@ -388,8 +382,17 @@ mod tests {
                 "result": {
                     "type": "event",
                     "key": {"type": "Variant", "value": [4, 1]},
-                    "event": {"blockNumber": 10, "eventIndex": 2},
-                    "decodedEvent": null
+                    "event": {
+                        "blockNumber": 10,
+                        "eventIndex": 2,
+                        "timestamp": 1717171717000_u64,
+                        "event": {
+                            "specVersion": 1,
+                            "palletName": "Balances",
+                            "eventName": "Deposit",
+                            "fields": {"amount": "10"}
+                        }
+                    }
                 }
             }
         }))
