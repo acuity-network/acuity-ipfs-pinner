@@ -2,11 +2,11 @@ use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::oneshot,
     task::JoinHandle,
-    time::{Duration, timeout},
+    time::{Duration, sleep, timeout},
 };
 use tracing::{info, warn};
 
@@ -87,11 +87,12 @@ pub async fn start_ack_listener(kubo: KuboClient, protocol: String) -> Result<Ac
 async fn handle_ack_stream(
     kubo: KuboClient,
     protocol: &str,
-    mut stream: TcpStream,
+    stream: TcpStream,
     remote_addr: SocketAddr,
 ) -> Result<()> {
+    let mut reader = BufReader::new(stream);
     let mut cid_bytes = Vec::new();
-    timeout(Duration::from_secs(30), stream.read_to_end(&mut cid_bytes)).await??;
+    timeout(Duration::from_secs(30), reader.read_until(b'\n', &mut cid_bytes)).await??;
 
     let cid = parse_cid_request(&cid_bytes)?;
     info!(ack_protocol = %protocol, remote_addr = %remote_addr, cid = %cid, "received CID push notification");
@@ -99,8 +100,11 @@ async fn handle_ack_stream(
     let bytes = kubo.cat(&cid).await?;
     info!(ack_protocol = %protocol, remote_addr = %remote_addr, cid = %cid, byte_len = bytes.len(), "received content for CID; sending ack");
 
-    let ack = format!("{ACK_RESPONSE_PREFIX}{cid}");
+    let mut stream = reader.into_inner();
+    let ack = format!("{ACK_RESPONSE_PREFIX}{cid}\n");
     timeout(Duration::from_secs(10), stream.write_all(ack.as_bytes())).await??;
+    timeout(Duration::from_secs(10), stream.flush()).await??;
+    sleep(Duration::from_millis(250)).await;
     timeout(Duration::from_secs(10), stream.shutdown()).await??;
     Ok(())
 }
@@ -121,6 +125,11 @@ mod tests {
     #[test]
     fn parse_cid_request_trims_whitespace() {
         assert_eq!(parse_cid_request(b"  QmExample\n").unwrap(), "QmExample");
+    }
+
+    #[test]
+    fn parse_cid_request_accepts_newline_delimited_payload() {
+        assert_eq!(parse_cid_request(b"QmExample\nrest ignored by reader").unwrap(), "QmExample\nrest ignored by reader".trim());
     }
 
     #[test]
