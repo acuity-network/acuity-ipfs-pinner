@@ -6,7 +6,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::oneshot,
     task::JoinHandle,
-    time::{Duration, sleep, timeout},
+    time::Duration,
 };
 use tracing::{info, warn};
 
@@ -63,8 +63,14 @@ pub async fn start_ack_listener(kubo: KuboClient, protocol: String) -> Result<Ac
                             let kubo = kubo.clone();
                             let protocol = listener_protocol.clone();
                             tokio::spawn(async move {
-                                if let Err(error) = handle_ack_stream(kubo, &protocol, stream, remote_addr).await {
-                                    warn!(ack_protocol = %protocol, remote_addr = %remote_addr, error = %error, "ack stream failed");
+                                match tokio::time::timeout(Duration::from_secs(60), handle_ack_stream(kubo, &protocol, stream, remote_addr)).await {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(error)) => {
+                                        warn!(ack_protocol = %protocol, remote_addr = %remote_addr, error = %error, "ack stream failed");
+                                    }
+                                    Err(_) => {
+                                        warn!(ack_protocol = %protocol, remote_addr = %remote_addr, "ack stream timed out");
+                                    }
                                 }
                             });
                         }
@@ -92,7 +98,7 @@ async fn handle_ack_stream(
 ) -> Result<()> {
     let mut reader = BufReader::new(stream);
     let mut cid_bytes = Vec::new();
-    timeout(Duration::from_secs(30), reader.read_until(b'\n', &mut cid_bytes)).await??;
+    reader.read_until(b'\n', &mut cid_bytes).await?;
 
     let cid = parse_cid_request(&cid_bytes)?;
     info!(ack_protocol = %protocol, remote_addr = %remote_addr, cid = %cid, "received CID push notification");
@@ -102,10 +108,9 @@ async fn handle_ack_stream(
 
     let mut stream = reader.into_inner();
     let ack = format!("{ACK_RESPONSE_PREFIX}{cid}\n");
-    timeout(Duration::from_secs(10), stream.write_all(ack.as_bytes())).await??;
-    timeout(Duration::from_secs(10), stream.flush()).await??;
-    sleep(Duration::from_millis(250)).await;
-    timeout(Duration::from_secs(10), stream.shutdown()).await??;
+    stream.write_all(ack.as_bytes()).await?;
+    stream.flush().await?;
+    stream.shutdown().await?;
     Ok(())
 }
 

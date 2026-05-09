@@ -62,7 +62,7 @@ impl KuboClient {
 
     pub async fn pin(&self, cid: &str) -> Result<()> {
         let url = format!("{}/api/v0/pin/add", self.base_url);
-        let timeout = std::time::Duration::from_secs(30);
+        let timeout = std::time::Duration::from_secs(600);
         info!(cid = %cid, %url, timeout_secs = timeout.as_secs(), "starting kubo pin/add request");
 
         let response = self
