@@ -2,8 +2,6 @@
 
 A small Rust service that subscribes to live `Content.PublishRevision` events from `acuity-index`, pins the referenced IPFS content to a local Kubo node, then inspects the protobuf item payload for image mixins and pins every embedded image CID too.
 
-It also exposes a custom libp2p push/ack protocol through Kubo stream mounting so a publishing node can push a CID, the pinner can fetch that CID's content, and then return an ACK only after the content has been received. This push/ack path does **not** pin content.
-
 ## What it does
 
 - connects to an `acuity-index` WebSocket API
@@ -20,12 +18,8 @@ It also exposes a custom libp2p push/ack protocol through Kubo stream mounting s
 - pins every extracted image CID and logs the list
 - stores the Kubo repo at `~/.local/share/acuity-ipfs-pinner/ipfs-repo`
 - runs `ipfs init --repo-dir <repo>` on startup and logs whether the repo was created or already existed
-- runs `ipfs config --bool Experimental.Libp2pStreamMounting true --repo-dir <repo>` before starting the daemon
-- documents the CID push/ACK flow and a Helia publisher example in [`docs/ack-protocol.md`](docs/ack-protocol.md)
 - runs `ipfs config --json Addresses.Swarm ... --repo-dir <repo>` before starting the daemon
 - starts `ipfs daemon --repo-dir <repo>` automatically and waits for the API to become available
-- registers a custom Kubo `p2p/listen` stream mount for the ACK protocol and forwards it to a local TCP handler
-- when a CID is pushed over that protocol, fetches the content with Kubo `cat` and only then sends an ACK back on the same stream
 - logs each IPv4/IPv6 WebSocket swarm multiaddr reported by Kubo after startup, including the `/p2p/<peer-id>` suffix
 
 Historical events are not handled.
@@ -43,7 +37,6 @@ Without variant indexing enabled, `acuity-index` cannot subscribe to all `Conten
 
 - acuity-index URL: `ws://127.0.0.1:8172`
 - Kubo API URL: `http://127.0.0.1:5001`
-- ACK protocol: `/x/acuity/ack/1.0.0`
 
 ## Usage
 
@@ -58,8 +51,7 @@ Run with explicit URLs:
 ```bash
 cargo run -- \
   --indexer-url ws://127.0.0.1:8172 \
-  --kubo-api-url http://127.0.0.1:5001 \
-  --ack-protocol /x/acuity/ack/1.0.0
+  --kubo-api-url http://127.0.0.1:5001
 ```
 
 Build a release binary:
@@ -73,7 +65,6 @@ cargo build --release
 
 - `--indexer-url <URL>`: `acuity-index` WebSocket endpoint
 - `--kubo-api-url <URL>`: Kubo HTTP API base URL
-- `--ack-protocol <PROTOCOL>`: custom libp2p stream protocol for CID push/ack; for Kubo `p2p/listen`, this must be in the `/x/...` namespace
 - `-h`, `--help`: show help
 
 ## How it works
@@ -82,13 +73,7 @@ cargo build --release
 2. Request event metadata.
 3. Find the pallet/event indexes for `Content.PublishRevision`.
 4. Subscribe using the `Variant` key.
-5. In parallel, register a custom Kubo `p2p/listen` stream mount for the ACK protocol.
-6. When a publishing node opens that protocol and sends a CID:
-   - read the CID from the incoming stream
-   - call Kubo `cat`
-   - if `cat` succeeds, reply on the same stream with `ACK: received <cid>`
-   - do not pin the CID from this path
-7. For each live chain notification:
+5. For each live chain notification:
    - verify it is a hydrated `Content.PublishRevision`
    - extract `event.event.fields.ipfs_hash`
    - convert the digest to CIDv0
@@ -97,7 +82,7 @@ cargo build --release
    - decode the protobuf item payload
    - extract and log image CIDs from any image mixins
    - call Kubo `pin/add` for each extracted image CID
-8. If the WebSocket connection drops, retry after a short delay.
+6. If the WebSocket connection drops, retry after a short delay.
 
 ## IPFS hash conversion
 
@@ -132,7 +117,6 @@ JPEG mipmaps are stored directly in `mipmap_level[*].ipfs_hash`. The top-level `
 - Rust toolchain
 - a running `acuity-index` instance
 - the `ipfs` CLI installed locally
-- a Kubo version with `p2p/listen` / libp2p stream mounting support
 
 By default the embedded Kubo daemon uses this repo path:
 
@@ -162,4 +146,3 @@ Only unit tests are included. Integration tests are intentionally not included.
 - The service keeps no persistent state.
 - Repeated events may cause repeated pin requests; Kubo pinning is expected to be safe for that case.
 - Notifications are processed from live subscriptions only.
-- The push/ack path fetches content and replies with an ACK, but does not pin content. Pinning still only happens when the CID appears in a chain event.

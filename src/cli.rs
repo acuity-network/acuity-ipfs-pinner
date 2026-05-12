@@ -1,7 +1,7 @@
 use clap::Parser;
 use serde::Serialize;
 
-use crate::config::{DEFAULT_ACK_PROTOCOL, DEFAULT_INDEXER_URL, DEFAULT_KUBO_API_URL};
+use crate::config::{DEFAULT_INDEXER_URL, DEFAULT_KUBO_API_URL};
 
 fn clap_styles() -> clap::builder::Styles {
     use clap::builder::styling::{AnsiColor, Effects, Styles};
@@ -26,9 +26,6 @@ pub struct Cli {
 
     #[arg(long, default_value = DEFAULT_KUBO_API_URL)]
     pub kubo_api_url: String,
-
-    #[arg(long, default_value = DEFAULT_ACK_PROTOCOL)]
-    pub ack_protocol: String,
 }
 
 #[cfg(test)]
@@ -40,7 +37,6 @@ mod tests {
         let cli = Cli::parse_from(["acuity-ipfs-pinner"]);
         assert_eq!(cli.indexer_url, DEFAULT_INDEXER_URL);
         assert_eq!(cli.kubo_api_url, DEFAULT_KUBO_API_URL);
-        assert_eq!(cli.ack_protocol, DEFAULT_ACK_PROTOCOL);
     }
 
     #[test]
@@ -51,11 +47,8 @@ mod tests {
             "ws://example.test:8172",
             "--kubo-api-url",
             "http://example.test:5001",
-            "--ack-protocol",
-            "/x/myapp/ack/1.0.0",
         ]);
         assert_eq!(cli.indexer_url, "ws://example.test:8172");
         assert_eq!(cli.kubo_api_url, "http://example.test:5001");
-        assert_eq!(cli.ack_protocol, "/x/myapp/ack/1.0.0");
     }
 }

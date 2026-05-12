@@ -5,7 +5,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
 use crate::{
-    ack::start_ack_listener,
     config::Config,
     indexer::{
         close_indexer_connection, extract_publish_revision, lookup_publish_revision_variant,
@@ -19,7 +18,6 @@ use crate::{
 pub async fn run(config: Config) -> Result<()> {
     let pinner = KuboClient::new(config.kubo_api_url.clone());
     let mut kubo_daemon = start_kubo_daemon(&pinner).await?;
-    let ack_listener = start_ack_listener(pinner.clone(), config.ack_protocol.clone()).await?;
 
     loop {
         match run_once(&config, pinner.clone()).await {
@@ -38,8 +36,6 @@ pub async fn run(config: Config) -> Result<()> {
     }
 
     info!(indexer_url = %config.indexer_url, kubo_api_url = %config.kubo_api_url, kubo_daemon_managed = kubo_daemon.is_some(), "shutdown sequence complete for application network connections");
-
-    ack_listener.stop(&pinner).await?;
 
     if let Some(mut daemon) = kubo_daemon.take() {
         stop_kubo_daemon(&mut daemon).await?;
